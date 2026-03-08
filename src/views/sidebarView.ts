@@ -11,18 +11,20 @@ import type { ParserService } from '../services/parserService';
 import type { AgentService } from '../services/agentService';
 import { handleMessage as parseManageHandle } from './parseManageTab';
 import { handleMessage as chatTabHandle } from './chatTab';
+import type { StatusBar } from '../statusBar';
 import type { ParseManageTabDeps } from './parseManageTab';
 import type { ChatTabDeps } from './chatTab';
 
 const log = createLogger('sidebarView');
 
-const PARSE_ACTIONS = new Set(['runParse', 'listParseHistory', 'getProject', 'setCompileCommands']);
+const PARSE_ACTIONS = new Set(['listParseHistory', 'getProject', 'setCompileCommands']);
 const CHAT_ACTIONS = new Set(['sendChat', 'getContext']);
 
 export interface SidebarViewDeps {
   config: Config;
   parserService: ParserService;
   agentService: AgentService;
+  statusBar: StatusBar;
 }
 
 export class SidebarView implements vscode.WebviewViewProvider {
@@ -70,6 +72,21 @@ export class SidebarView implements vscode.WebviewViewProvider {
           log.warn('postMessage 失败', e);
         }
       };
+      if (action === 'runParse') {
+        this._deps.statusBar.updateProgress(0);
+        this._deps.parserService.parse().then((result) => {
+          if (result.status === 'ok') {
+            this._deps!.statusBar.setDone();
+          } else {
+            this._deps!.statusBar.setFailed(result.message);
+          }
+          post({ action: 'parseResult', result });
+        }).catch((e) => {
+          this._deps!.statusBar.setFailed(e instanceof Error ? e.message : String(e));
+          post({ action: 'parseResult', result: { status: 'error', message: String(e) } });
+        });
+        return;
+      }
       if (PARSE_ACTIONS.has(action)) {
         parseManageHandle(action, payload, this._deps as ParseManageTabDeps, post);
       } else if (CHAT_ACTIONS.has(action)) {

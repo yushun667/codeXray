@@ -40,7 +40,7 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar = new StatusBar();
   visualizationProvider = new VisualizationProvider();
   sidebarView = new SidebarView(context);
-  sidebarView.setDeps({ config, parserService, agentService });
+  sidebarView.setDeps({ config, parserService, agentService, statusBar });
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('codexray.sidebar', sidebarView)
