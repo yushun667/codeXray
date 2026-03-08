@@ -2,7 +2,7 @@
 # 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §2.2
 
 cmake_minimum_required(VERSION 3.16)
-project(codexray-parser VERSION 0.1.0 LANGUAGES CXX)
+project(codexray-parser VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,9 +25,17 @@ if(NOT SQLite3_FOUND)
   message(FATAL_ERROR "SQLite3 not found. Install libsqlite3-dev or sqlite3.")
 endif()
 
-# LLVM/Clang（可选：骨架阶段可不链接，后续 ast/ 实现时必需）
+# LLVM/Clang：优先使用 parser/third_party/llvm，否则使用环境 LLVM_DIR
 set(LLVM_FOUND FALSE)
-if(DEFINED ENV{LLVM_DIR})
+set(CODEXRAY_LLVM_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llvm")
+if(EXISTS "${CODEXRAY_LLVM_THIRD_PARTY}/lib/cmake/llvm/LLVMConfig.cmake")
+  set(LLVM_DIR "${CODEXRAY_LLVM_THIRD_PARTY}/lib/cmake/llvm" CACHE PATH "LLVM config (third_party)" FORCE)
+  if(EXISTS "${CODEXRAY_LLVM_THIRD_PARTY}/lib/cmake/clang/ClangConfig.cmake")
+    set(Clang_DIR "${CODEXRAY_LLVM_THIRD_PARTY}/lib/cmake/clang" CACHE PATH "Clang config (third_party)" FORCE)
+  endif()
+  message(STATUS "Using LLVM from third_party: ${LLVM_DIR}")
+endif()
+if(NOT LLVM_DIR AND DEFINED ENV{LLVM_DIR})
   set(LLVM_DIR "$ENV{LLVM_DIR}" CACHE PATH "LLVM config path")
 endif()
 find_package(LLVM QUIET CONFIG)
@@ -93,13 +101,13 @@ target_include_directories(codexray-parser PRIVATE
 target_link_libraries(codexray-parser PRIVATE ${SQLite3_LIBRARIES})
 
 if(LLVM_FOUND AND Clang_FOUND)
-  include_directories(${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
-  # 后续阶段取消注释并链接 Clang 组件
-  # llvm_map_components_to_libnames(llvm_libs support core)
-  # target_link_libraries(codexray-parser PRIVATE ${LLVM_LIBS}
-  #   clangTooling clangToolingCore clangFrontend clangDriver
-  #   clangSerialization clangParse clangSema clangAnalysis
-  #   clangAST clangLex clangBasic)
+  llvm_map_components_to_libnames(llvm_libs support core)
+  target_include_directories(codexray-parser PRIVATE ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
+  target_compile_definitions(codexray-parser PRIVATE CODEXRAY_HAVE_CLANG)
+  target_link_libraries(codexray-parser PRIVATE ${LLVM_LIBS}
+    clangTooling clangToolingCore clangFrontend clangDriver
+    clangSerialization clangParse clangSema clangAnalysis
+    clangAST clangLex clangBasic)
 endif()
 
 if(JSON_FOUND)

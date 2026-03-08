@@ -2,3 +2,8 @@ build/
 *.o
 *.a
 codexray-parser
+
+# third_party：预编译 LLVM 由 download_llvm.sh 下载，不纳入版本库
+third_party/llvm/
+third_party/*.tar.xz
+third_party/.tmp_llvm_extract/
