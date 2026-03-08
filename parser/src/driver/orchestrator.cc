@@ -1,0 +1,172 @@
+/**
+ * 解析引擎 driver：协调 parse 全流程（compile_commands → scheduler → AST → DB → history）
+ */
+
+#include "driver/orchestrator.h"
+#include "ast/call_graph/action.h"
+#include "ast/class_relation/action.h"
+#include "ast/control_flow/action.h"
+#include "ast/data_flow/action.h"
+#include "common/logger.h"
+#include "common/path_util.h"
+#include "compile_commands/load.h"
+#include "db/connection.h"
+#include "db/schema.h"
+#include "db/writer/writer.h"
+#include "history/history.h"
+#include "incremental/incremental.h"
+#include "scheduler/pool.h"
+#include <mutex>
+#include <set>
+#include <chrono>
+#include <sstream>
+#include <iomanip>
+
+namespace codexray {
+
+namespace {
+
+std::string NowUtc() {
+  auto now = std::chrono::system_clock::now();
+  auto t = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_buf;
+#ifdef _WIN32
+  gmtime_s(&tm_buf, &t);
+#else
+  gmtime_r(&t, &tm_buf);
+#endif
+  std::ostringstream os;
+  os << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%SZ");
+  return os.str();
+}
+
+}  // namespace
+
+bool RunParse(const ParseOptions& opts) {
+  if (opts.project_root.empty()) {
+    LogError("RunParse: project_root empty");
+    return false;
+  }
+  std::string project_root = NormalizePath(opts.project_root);
+  std::string cc_path = opts.compile_commands_path.empty()
+      ? (project_root + "/compile_commands.json")
+      : opts.compile_commands_path;
+  std::string db_path = opts.output_db.empty()
+      ? (project_root + "/.codexray/codexray.db")
+      : opts.output_db;
+
+  LogInfo("RunParse: project=%s db=%s", project_root.c_str(), db_path.c_str());
+
+  Connection conn;
+  if (!conn.Open(db_path)) return false;
+  if (!EnsureSchema(conn.Get())) return false;
+
+  int64_t project_id = DBWriter(conn.Get()).EnsureProject(project_root, cc_path);
+  if (project_id <= 0) {
+    LogError("RunParse: EnsureProject failed");
+    return false;
+  }
+
+  std::vector<TUEntry> all_tus = LoadCompileCommands(project_root, cc_path);
+  if (all_tus.empty()) {
+    LogError("RunParse: no TU from compile_commands");
+    return false;
+  }
+
+  std::vector<TUEntry> tus_to_run;
+  if (opts.incremental) {
+    std::vector<std::string> changed = GetChangedFiles(conn.Get(), project_id);
+    RemoveDataForFiles(conn.Get(), project_id, changed);
+    if (changed.empty()) {
+      LogInfo("RunParse: incremental, no changed files");
+      tus_to_run.clear();
+    } else {
+      std::set<std::string> changed_set(changed.begin(), changed.end());
+      for (const TUEntry& tu : all_tus) {
+        std::string src_n = NormalizePath(tu.source_file);
+        if (changed_set.count(src_n) || changed_set.count(tu.source_file))
+          tus_to_run.push_back(tu);
+      }
+    }
+  } else {
+    if (opts.lazy && !opts.priority_dirs.empty()) {
+      std::vector<TUEntry> priority, rest;
+      SplitByPriorityDirs(all_tus, project_root, opts.priority_dirs, &priority, &rest);
+      tus_to_run = priority;
+    } else {
+      tus_to_run = all_tus;
+    }
+  }
+
+  if (tus_to_run.empty()) {
+    LogInfo("RunParse: no TU to run");
+    return true;
+  }
+
+  std::string mode = opts.incremental ? "incremental" : "full";
+  int64_t run_id = InsertParseRun(conn.Get(), project_id, mode);
+  if (run_id <= 0) {
+    LogError("RunParse: InsertParseRun failed");
+    return false;
+  }
+
+  std::mutex collect_mutex;
+  std::vector<SymbolRecord> all_symbols;
+  std::vector<CallEdgeRecord> all_edges;
+  DBWriter writer(conn.Get());
+  unsigned parallel = opts.parallel;
+  if (parallel == 0) parallel = 1;
+
+  TUProcessor processor = [&](const TUEntry& tu) {
+    int64_t file_id = writer.EnsureFile(project_id, tu.source_file);
+    if (file_id <= 0) return false;
+    CallGraphOutput cg_out;
+    if (!RunCallGraphOnTU(tu, &cg_out)) return false;
+    for (auto& s : cg_out.symbols) s.def_file_id = file_id;
+    for (auto& e : cg_out.edges) e.call_site_file_id = file_id;
+    ClassRelationOutput cr_out;
+    RunClassRelationOnTU(tu, &cr_out);
+    DataFlowOutput df_out;
+    RunDataFlowOnTU(tu, &df_out);
+    ControlFlowOutput cf_out;
+    RunControlFlowOnTU(tu, &cf_out);
+    std::lock_guard<std::mutex> lock(collect_mutex);
+    for (auto& s : cg_out.symbols) all_symbols.push_back(s);
+    for (auto& e : cg_out.edges) all_edges.push_back(e);
+    return true;
+  };
+
+  ProgressCallback on_progress = [&](size_t done, size_t total) {
+    LogInfo("RunParse progress: %zu/%zu", done, total);
+    if (opts.progress_stdout) opts.progress_stdout(done, total);
+  };
+
+  RunTUPool(tus_to_run, parallel, processor, on_progress);
+
+  if (!conn.BeginTransaction()) return false;
+  auto usr_to_id = writer.WriteSymbols(project_id, all_symbols);
+  if (!writer.WriteCallEdges(project_id, all_edges, usr_to_id)) {
+    conn.Rollback();
+    return false;
+  }
+  for (const TUEntry& tu : tus_to_run) {
+    int64_t file_id = writer.EnsureFile(project_id, tu.source_file);
+    if (file_id > 0)
+      writer.UpdateParsedFile(project_id, file_id, run_id, 0, "");
+  }
+  if (!conn.Commit()) {
+    conn.Rollback();
+    return false;
+  }
+
+  std::string finished = NowUtc();
+  if (!UpdateParseRun(conn.Get(), run_id, finished,
+                     static_cast<int>(tus_to_run.size()), "completed", "")) {
+    LogError("RunParse: UpdateParseRun failed");
+    return false;
+  }
+  LogInfo("RunParse: done run_id=%ld files=%zu", (long)run_id, tus_to_run.size());
+  return true;
+}
+
+}  // namespace codexray
