@@ -187,6 +187,7 @@ std::vector<TUEntry> LoadCompileCommands(const std::string& project_root,
     TUEntry entry;
     entry.source_file = NormalizePath(source_file);
     entry.compile_args = std::move(args);
+    entry.working_directory = NormalizePath(directory.empty() ? project_root : directory);
     if (!entry.source_file.empty() && !entry.compile_args.empty())
       result.push_back(std::move(entry));
     pos = obj_end;

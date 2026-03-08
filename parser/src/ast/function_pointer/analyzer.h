@@ -10,14 +10,29 @@
 #include <string>
 #include <vector>
 
+#ifdef CODEXRAY_HAVE_CLANG
+namespace clang {
+class CallExpr;
+class ASTContext;
+}  // namespace clang
+#endif
+
 namespace codexray {
 
 /**
- * 给定调用点为函数指针时，返回所有可能 callee 的 USR。
- * 占位签名（无 Clang）：仅接受 caller_usr，返回空。
- * 完整签名（有 Clang）：GetPossibleCallees(CallExpr* call, ASTContext& ctx, const std::string& caller_usr)。
+ * 占位（无 Clang）：仅接受 caller_usr，返回空。
  */
 std::vector<std::string> GetPossibleCallees(const std::string& caller_usr);
+
+#ifdef CODEXRAY_HAVE_CLANG
+/**
+ * 给定调用点为函数指针时，返回所有可能 callee 的 USR。
+ * 有 Clang 时由 call_graph 在 VisitCallExpr 中调用。
+ */
+std::vector<std::string> GetPossibleCallees(clang::CallExpr* call,
+                                            clang::ASTContext& ctx,
+                                            const std::string& caller_usr);
+#endif
 
 }  // namespace codexray
 

@@ -105,7 +105,7 @@ if(LLVM_FOUND AND Clang_FOUND)
   target_include_directories(codexray-parser PRIVATE ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
   target_compile_definitions(codexray-parser PRIVATE CODEXRAY_HAVE_CLANG)
   target_link_libraries(codexray-parser PRIVATE ${LLVM_LIBS}
-    clangTooling clangToolingCore clangFrontend clangDriver
+    clangIndex clangTooling clangToolingCore clangFrontend clangDriver
     clangSerialization clangParse clangSema clangAnalysis
     clangAST clangLex clangBasic)
 endif()

@@ -13,8 +13,9 @@
 namespace codexray {
 
 struct TUEntry {
-  std::string source_file;   // 绝对路径
+  std::string source_file;       // 绝对路径
   std::vector<std::string> compile_args;
+  std::string working_directory; // 编译时工作目录（来自 compile_commands directory），供 ClangTool 使用
 };
 
 /**
