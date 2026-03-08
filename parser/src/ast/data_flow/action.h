@@ -23,9 +23,13 @@ struct GlobalVarRecord {
 };
 
 struct DataFlowEdgeRecord {
-  int64_t var_id = 0;
-  int64_t reader_id = 0;
-  int64_t writer_id = 0;
+  std::string var_usr;    // 写入时解析为 var_id
+  std::string reader_usr; // 写入时解析为 reader_id (symbol)
+  std::string writer_usr; // 写入时解析为 writer_id (symbol)
+  int64_t read_file_id = 0;
+  int read_line = 0, read_column = 0;
+  int64_t write_file_id = 0;
+  int write_line = 0, write_column = 0;
 };
 
 struct DataFlowOutput {

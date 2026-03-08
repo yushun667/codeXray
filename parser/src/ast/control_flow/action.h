@@ -15,7 +15,7 @@ namespace codexray {
 struct TUEntry;
 
 struct CfgNodeRecord {
-  int64_t symbol_id = 0;
+  std::string symbol_usr;  // 所属函数 USR，写入时解析为 symbol_id
   std::string block_id;
   std::string kind;
   int64_t file_id = 0;
@@ -23,8 +23,8 @@ struct CfgNodeRecord {
 };
 
 struct CfgEdgeRecord {
-  int64_t from_node_id = 0;
-  int64_t to_node_id = 0;
+  int from_node_index = 0;  // 在本次输出的 nodes 数组中的下标，写入时解析为 from_node_id
+  int to_node_index = 0;
   std::string edge_type;
 };
 

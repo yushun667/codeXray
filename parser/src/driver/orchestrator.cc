@@ -113,6 +113,12 @@ bool RunParse(const ParseOptions& opts) {
   std::mutex collect_mutex;
   std::vector<SymbolRecord> all_symbols;
   std::vector<CallEdgeRecord> all_edges;
+  std::vector<ClassRecord> all_classes;
+  std::vector<ClassRelationRecord> all_relations;
+  std::vector<GlobalVarRecord> all_global_vars;
+  std::vector<DataFlowEdgeRecord> all_data_flow_edges;
+  std::vector<CfgNodeRecord> all_cfg_nodes;
+  std::vector<CfgEdgeRecord> all_cfg_edges;
   DBWriter writer(conn.Get());
   unsigned parallel = opts.parallel;
   if (parallel == 0) parallel = 1;
@@ -126,13 +132,34 @@ bool RunParse(const ParseOptions& opts) {
     for (auto& e : cg_out.edges) e.call_site_file_id = file_id;
     ClassRelationOutput cr_out;
     RunClassRelationOnTU(tu, &cr_out);
+    for (auto& c : cr_out.classes) {
+      c.file_id = file_id;
+      c.def_file_id = file_id;
+    }
     DataFlowOutput df_out;
     RunDataFlowOnTU(tu, &df_out);
+    for (auto& g : df_out.global_vars) {
+      g.def_file_id = file_id;
+      g.file_id = file_id;
+    }
     ControlFlowOutput cf_out;
     RunControlFlowOnTU(tu, &cf_out);
+    for (auto& n : cf_out.nodes) n.file_id = file_id;
     std::lock_guard<std::mutex> lock(collect_mutex);
     for (auto& s : cg_out.symbols) all_symbols.push_back(s);
     for (auto& e : cg_out.edges) all_edges.push_back(e);
+    for (auto& c : cr_out.classes) all_classes.push_back(c);
+    for (auto& r : cr_out.relations) all_relations.push_back(r);
+    for (auto& g : df_out.global_vars) all_global_vars.push_back(g);
+    for (auto& e : df_out.edges) all_data_flow_edges.push_back(e);
+    size_t cfg_base = all_cfg_nodes.size();
+    for (auto& n : cf_out.nodes) all_cfg_nodes.push_back(n);
+    for (auto& e : cf_out.edges) {
+      CfgEdgeRecord e2 = e;
+      e2.from_node_index += static_cast<int>(cfg_base);
+      e2.to_node_index += static_cast<int>(cfg_base);
+      all_cfg_edges.push_back(e2);
+    }
     return true;
   };
 
@@ -146,6 +173,21 @@ bool RunParse(const ParseOptions& opts) {
   if (!conn.BeginTransaction()) return false;
   auto usr_to_id = writer.WriteSymbols(project_id, all_symbols);
   if (!writer.WriteCallEdges(project_id, all_edges, usr_to_id)) {
+    conn.Rollback();
+    return false;
+  }
+  auto class_usr_to_id = writer.WriteClasses(project_id, all_classes);
+  if (!writer.WriteClassRelations(project_id, all_relations, class_usr_to_id)) {
+    conn.Rollback();
+    return false;
+  }
+  auto var_usr_to_id = writer.WriteGlobalVars(project_id, all_global_vars);
+  if (!writer.WriteDataFlowEdges(project_id, all_data_flow_edges, var_usr_to_id, usr_to_id)) {
+    conn.Rollback();
+    return false;
+  }
+  std::vector<int64_t> cfg_node_ids = writer.WriteCfgNodes(project_id, all_cfg_nodes, usr_to_id);
+  if (!writer.WriteCfgEdges(project_id, all_cfg_edges, cfg_node_ids)) {
     conn.Rollback();
     return false;
   }

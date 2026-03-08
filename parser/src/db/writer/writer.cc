@@ -171,6 +171,176 @@ bool DBWriter::WriteCallEdges(int64_t project_id,
   return true;
 }
 
+std::unordered_map<std::string, int64_t> DBWriter::WriteClasses(
+    int64_t project_id,
+    const std::vector<ClassRecord>& classes) {
+  std::unordered_map<std::string, int64_t> usr_to_id;
+  if (!db_ || classes.empty()) return usr_to_id;
+  const char* sql = "INSERT INTO class(usr,file_id,name,qualified_name,def_file_id,def_line,def_column,def_line_end,def_column_end)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+  for (const auto& c : classes) {
+    sqlite3_reset(stmt);
+    sqlite3_bind_text(stmt, 1, c.usr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, c.file_id);
+    sqlite3_bind_text(stmt, 3, c.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, c.qualified_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 5, c.def_file_id);
+    sqlite3_bind_int(stmt, 6, c.def_line);
+    sqlite3_bind_int(stmt, 7, c.def_column);
+    sqlite3_bind_int(stmt, 8, c.def_line_end);
+    sqlite3_bind_int(stmt, 9, c.def_column_end);
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+      usr_to_id[c.usr] = LastInsertId(db_);
+  }
+  sqlite3_finalize(stmt);
+  LogInfo("WriteClasses: inserted %zu classes", usr_to_id.size());
+  return usr_to_id;
+}
+
+bool DBWriter::WriteClassRelations(int64_t project_id,
+                                   const std::vector<ClassRelationRecord>& relations,
+                                   const std::unordered_map<std::string, int64_t>& class_usr_to_id) {
+  if (!db_ || relations.empty()) return true;
+  const char* sql = "INSERT INTO class_relation(parent_id,child_id,relation_type) VALUES(?,?,?)";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (const auto& r : relations) {
+    auto pit = class_usr_to_id.find(r.parent_usr);
+    auto cit = class_usr_to_id.find(r.child_usr);
+    if (pit == class_usr_to_id.end() || cit == class_usr_to_id.end()) continue;
+    sqlite3_reset(stmt);
+    sqlite3_bind_int64(stmt, 1, pit->second);
+    sqlite3_bind_int64(stmt, 2, cit->second);
+    sqlite3_bind_text(stmt, 3, r.relation_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+  }
+  sqlite3_finalize(stmt);
+  return true;
+}
+
+std::unordered_map<std::string, int64_t> DBWriter::WriteGlobalVars(
+    int64_t project_id,
+    const std::vector<GlobalVarRecord>& global_vars) {
+  std::unordered_map<std::string, int64_t> usr_to_id;
+  if (!db_ || global_vars.empty()) return usr_to_id;
+  const char* sql = "INSERT INTO global_var(usr,def_file_id,def_line,def_column,def_line_end,def_column_end,file_id,name)"
+                    " VALUES(?,?,?,?,?,?,?,?)";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+  for (const auto& g : global_vars) {
+    sqlite3_reset(stmt);
+    sqlite3_bind_text(stmt, 1, g.usr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, g.def_file_id);
+    sqlite3_bind_int(stmt, 3, g.def_line);
+    sqlite3_bind_int(stmt, 4, g.def_column);
+    sqlite3_bind_int(stmt, 5, g.def_line_end);
+    sqlite3_bind_int(stmt, 6, g.def_column_end);
+    sqlite3_bind_int64(stmt, 7, g.file_id);
+    sqlite3_bind_text(stmt, 8, g.name.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+      usr_to_id[g.usr] = LastInsertId(db_);
+  }
+  sqlite3_finalize(stmt);
+  LogInfo("WriteGlobalVars: inserted %zu vars", usr_to_id.size());
+  return usr_to_id;
+}
+
+bool DBWriter::WriteDataFlowEdges(int64_t project_id,
+                                  const std::vector<DataFlowEdgeRecord>& edges,
+                                  const std::unordered_map<std::string, int64_t>& var_usr_to_id,
+                                  const std::unordered_map<std::string, int64_t>& symbol_usr_to_id) {
+  if (!db_ || edges.empty()) return true;
+  const char* sql = "INSERT INTO data_flow_edge(var_id,reader_id,writer_id,read_file_id,read_line,read_column,write_file_id,write_line,write_column)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (const auto& e : edges) {
+    auto vit = var_usr_to_id.find(e.var_usr);
+    if (vit == var_usr_to_id.end()) continue;
+    int64_t reader_id = 0, writer_id = 0;
+    if (!e.reader_usr.empty()) {
+      auto it = symbol_usr_to_id.find(e.reader_usr);
+      if (it != symbol_usr_to_id.end()) reader_id = it->second;
+    }
+    if (!e.writer_usr.empty()) {
+      auto it = symbol_usr_to_id.find(e.writer_usr);
+      if (it != symbol_usr_to_id.end()) writer_id = it->second;
+    }
+    if (reader_id == 0 && writer_id == 0) continue;
+    sqlite3_reset(stmt);
+    sqlite3_bind_int64(stmt, 1, vit->second);
+    reader_id ? sqlite3_bind_int64(stmt, 2, reader_id) : sqlite3_bind_null(stmt, 2);
+    writer_id ? sqlite3_bind_int64(stmt, 3, writer_id) : sqlite3_bind_null(stmt, 3);
+    e.read_file_id ? sqlite3_bind_int64(stmt, 4, e.read_file_id) : sqlite3_bind_null(stmt, 4);
+    sqlite3_bind_int(stmt, 5, e.read_line);
+    sqlite3_bind_int(stmt, 6, e.read_column);
+    e.write_file_id ? sqlite3_bind_int64(stmt, 7, e.write_file_id) : sqlite3_bind_null(stmt, 7);
+    sqlite3_bind_int(stmt, 8, e.write_line);
+    sqlite3_bind_int(stmt, 9, e.write_column);
+    sqlite3_step(stmt);
+  }
+  sqlite3_finalize(stmt);
+  return true;
+}
+
+std::vector<int64_t> DBWriter::WriteCfgNodes(int64_t project_id,
+                                            const std::vector<CfgNodeRecord>& nodes,
+                                            const std::unordered_map<std::string, int64_t>& symbol_usr_to_id) {
+  std::vector<int64_t> node_ids;
+  if (!db_ || nodes.empty()) return node_ids;
+  node_ids.reserve(nodes.size());
+  const char* sql = "INSERT INTO cfg_node(symbol_id,block_id,kind,file_id,line,column) VALUES(?,?,?,?,?,?)";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return node_ids;
+  for (const auto& n : nodes) {
+    auto it = symbol_usr_to_id.find(n.symbol_usr);
+    if (it == symbol_usr_to_id.end()) {
+      node_ids.push_back(0);
+      continue;
+    }
+    sqlite3_reset(stmt);
+    sqlite3_bind_int64(stmt, 1, it->second);
+    sqlite3_bind_text(stmt, 2, n.block_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, n.kind.c_str(), -1, SQLITE_TRANSIENT);
+    n.file_id ? sqlite3_bind_int64(stmt, 4, n.file_id) : sqlite3_bind_null(stmt, 4);
+    sqlite3_bind_int(stmt, 5, n.line);
+    sqlite3_bind_int(stmt, 6, n.column);
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+      node_ids.push_back(LastInsertId(db_));
+    else
+      node_ids.push_back(0);
+  }
+  sqlite3_finalize(stmt);
+  LogInfo("WriteCfgNodes: inserted %zu nodes", node_ids.size());
+  return node_ids;
+}
+
+bool DBWriter::WriteCfgEdges(int64_t project_id,
+                             const std::vector<CfgEdgeRecord>& edges,
+                             const std::vector<int64_t>& node_ids) {
+  if (!db_ || edges.empty() || node_ids.empty()) return true;
+  const char* sql = "INSERT INTO cfg_edge(from_node_id,to_node_id,edge_type) VALUES(?,?,?)";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (const auto& e : edges) {
+    if (e.from_node_index < 0 || e.from_node_index >= static_cast<int>(node_ids.size()) ||
+        e.to_node_index < 0 || e.to_node_index >= static_cast<int>(node_ids.size()))
+      continue;
+    int64_t from_id = node_ids[e.from_node_index];
+    int64_t to_id = node_ids[e.to_node_index];
+    if (from_id == 0 || to_id == 0) continue;
+    sqlite3_reset(stmt);
+    sqlite3_bind_int64(stmt, 1, from_id);
+    sqlite3_bind_int64(stmt, 2, to_id);
+    sqlite3_bind_text(stmt, 3, e.edge_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+  }
+  sqlite3_finalize(stmt);
+  return true;
+}
+
 bool DBWriter::UpdateParsedFile(int64_t project_id, int64_t file_id, int64_t parse_run_id,
                                 int64_t file_mtime, const std::string& content_hash) {
   if (!db_) return false;
