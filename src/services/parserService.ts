@@ -159,6 +159,10 @@ export class ParserService {
       }
     }
     args.push('--parallel', String(opts.parallelism));
+    if (type === 'call_graph') {
+      const depth = typeof options.depth === 'number' && options.depth > 0 ? options.depth : 3;
+      args.push('--depth', String(depth));
+    }
     if (options.symbol) args.push('--symbol', options.symbol);
     if (options.file) args.push('--file', path.isAbsolute(options.file) ? options.file : path.join(project, options.file));
 
