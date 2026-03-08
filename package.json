@@ -1,0 +1,216 @@
+{
+  "name": "codexray",
+  "displayName": "CodeXray",
+  "description": "C/C++ 代码解析与可视化、AI 对话",
+  "version": "0.1.0",
+  "publisher": "codexray",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:codexray.sidebar",
+    "onCommand:codexray.openProject",
+    "onCommand:codexray.setCompileCommands",
+    "onCommand:codexray.runParse",
+    "onCommand:codexray.listParseHistory",
+    "onCommand:codexray.queryCallGraph",
+    "onCommand:codexray.queryClassGraph",
+    "onCommand:codexray.queryDataFlow",
+    "onCommand:codexray.queryControlFlow",
+    "onCommand:codexray.openAIChat",
+    "onCommand:codexray.focusVisualization",
+    "onCommand:codexray.gotoSymbolInEditor"
+  ],
+  "main": "./out/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexray.openProject",
+        "title": "CodeXray: 打开/选择工程目录"
+      },
+      {
+        "command": "codexray.setCompileCommands",
+        "title": "CodeXray: 设置 compile_commands.json 路径"
+      },
+      {
+        "command": "codexray.runParse",
+        "title": "CodeXray: 执行解析"
+      },
+      {
+        "command": "codexray.listParseHistory",
+        "title": "CodeXray: 查看历史解析记录"
+      },
+      {
+        "command": "codexray.queryCallGraph",
+        "title": "CodeXray: 查看调用链"
+      },
+      {
+        "command": "codexray.queryClassGraph",
+        "title": "CodeXray: 查看类关系图"
+      },
+      {
+        "command": "codexray.queryDataFlow",
+        "title": "CodeXray: 查看数据流"
+      },
+      {
+        "command": "codexray.queryControlFlow",
+        "title": "CodeXray: 查看控制流"
+      },
+      {
+        "command": "codexray.openAIChat",
+        "title": "CodeXray: 打开 AI 对话"
+      },
+      {
+        "command": "codexray.focusVisualization",
+        "title": "CodeXray: 聚焦到可视化标签"
+      },
+      {
+        "command": "codexray.gotoSymbolInEditor",
+        "title": "CodeXray: 定位到代码",
+        "when": "false"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codexray",
+          "title": "CodeXray",
+          "icon": "$(circuit-board)"
+        }
+      ]
+    },
+    "views": {
+      "codexray": [
+        {
+          "id": "codexray.sidebar",
+          "name": "CodeXray"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CodeXray",
+      "properties": {
+        "codexray.compileCommandsPath": {
+          "type": "string",
+          "default": "",
+          "description": "compile_commands.json 路径（可相对工作区根）"
+        },
+        "codexray.databasePath": {
+          "type": "string",
+          "default": "",
+          "description": "本地数据库路径（可选，默认在工作区 .codexray 下）"
+        },
+        "codexray.parserParallelism": {
+          "type": "number",
+          "default": 0,
+          "description": "解析并行度，正整数；0 表示 max(1, 核心数-2)"
+        },
+        "codexray.parserLazy": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用懒解析模式"
+        },
+        "codexray.parserPriorityDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "优先解析目录（相对工程根），如 [\"src\", \"include\"]"
+        },
+        "codexray.parserIncremental": {
+          "type": "boolean",
+          "default": true,
+          "description": "默认使用增量更新解析"
+        },
+        "codexray.agentEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Agent 服务地址（stdio 或 socket 路径 / HTTP URL）"
+        },
+        "codexray.llmProvider": {
+          "type": "string",
+          "default": "",
+          "description": "大模型 provider（如 openai、azure、ollama）"
+        },
+        "codexray.llmModel": {
+          "type": "string",
+          "default": "",
+          "description": "大模型标识"
+        },
+        "codexray.llmEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "大模型 API 端点"
+        },
+        "codexray.llmApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API Key（可选）"
+        },
+        "codexray.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "日志级别"
+        },
+        "codexray.logPath": {
+          "type": "string",
+          "default": "",
+          "description": "日志落盘路径（可选）"
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [],
+      "editor/context": [
+        {
+          "command": "codexray.queryCallGraph",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "codexray@1"
+        },
+        {
+          "command": "codexray.queryClassGraph",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "codexray@1"
+        },
+        {
+          "command": "codexray.queryDataFlow",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "codexray@1"
+        },
+        {
+          "command": "codexray.queryControlFlow",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "codexray@1"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.x",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.44"
+  }
+}
