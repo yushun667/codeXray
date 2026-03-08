@@ -3,10 +3,8 @@
  */
 
 #include "driver/orchestrator.h"
-#include "ast/call_graph/action.h"
-#include "ast/class_relation/action.h"
-#include "ast/control_flow/action.h"
-#include "ast/data_flow/action.h"
+#include "common/error_code.h"
+#include "ast/combined/action.h"
 #include "common/logger.h"
 #include "common/path_util.h"
 #include "compile_commands/load.h"
@@ -16,6 +14,7 @@
 #include "history/history.h"
 #include "incremental/incremental.h"
 #include "scheduler/pool.h"
+#include <sqlite3.h>
 #include <mutex>
 #include <set>
 #include <chrono>
@@ -42,10 +41,10 @@ std::string NowUtc() {
 
 }  // namespace
 
-bool RunParse(const ParseOptions& opts) {
+int RunParse(const ParseOptions& opts) {
   if (opts.project_root.empty()) {
     LogError("RunParse: project_root empty");
-    return false;
+    return static_cast<int>(ExitCode::kArgError);
   }
   std::string project_root = NormalizePath(opts.project_root);
   std::string cc_path = opts.compile_commands_path.empty()
@@ -58,19 +57,19 @@ bool RunParse(const ParseOptions& opts) {
   LogInfo("RunParse: project=%s db=%s", project_root.c_str(), db_path.c_str());
 
   Connection conn;
-  if (!conn.Open(db_path)) return false;
-  if (!EnsureSchema(conn.Get())) return false;
+  if (!conn.Open(db_path)) return static_cast<int>(ExitCode::kDbWriteFailed);
+  if (!EnsureSchema(conn.Get())) return static_cast<int>(ExitCode::kDbWriteFailed);
 
   int64_t project_id = DBWriter(conn.Get()).EnsureProject(project_root, cc_path);
   if (project_id <= 0) {
     LogError("RunParse: EnsureProject failed");
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
 
   std::vector<TUEntry> all_tus = LoadCompileCommands(project_root, cc_path);
   if (all_tus.empty()) {
     LogError("RunParse: no TU from compile_commands");
-    return false;
+    return static_cast<int>(ExitCode::kCompileCommands);
   }
 
   std::vector<TUEntry> tus_to_run;
@@ -78,8 +77,18 @@ bool RunParse(const ParseOptions& opts) {
     std::vector<std::string> changed = GetChangedFiles(conn.Get(), project_id);
     RemoveDataForFiles(conn.Get(), project_id, changed);
     if (changed.empty()) {
-      LogInfo("RunParse: incremental, no changed files");
-      tus_to_run.clear();
+      sqlite3_stmt* check = nullptr;
+      bool has_history = (sqlite3_prepare_v2(conn.Get(), "SELECT 1 FROM parsed_file WHERE project_id = ? LIMIT 1", -1, &check, nullptr) == SQLITE_OK &&
+                         sqlite3_bind_int64(check, 1, project_id) == SQLITE_OK &&
+                         sqlite3_step(check) == SQLITE_ROW);
+      if (check) sqlite3_finalize(check);
+      if (!has_history) {
+        LogInfo("RunParse: incremental first run, do full parse");
+        tus_to_run = all_tus;
+      } else {
+        LogInfo("RunParse: incremental, no changed files");
+        tus_to_run.clear();
+      }
     } else {
       std::set<std::string> changed_set(changed.begin(), changed.end());
       for (const TUEntry& tu : all_tus) {
@@ -100,17 +109,18 @@ bool RunParse(const ParseOptions& opts) {
 
   if (tus_to_run.empty()) {
     LogInfo("RunParse: no TU to run");
-    return true;
+    return static_cast<int>(ExitCode::kSuccess);
   }
 
   std::string mode = opts.incremental ? "incremental" : "full";
   int64_t run_id = InsertParseRun(conn.Get(), project_id, mode);
   if (run_id <= 0) {
     LogError("RunParse: InsertParseRun failed");
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
 
   std::mutex collect_mutex;
+  std::mutex db_mutex;
   std::vector<SymbolRecord> all_symbols;
   std::vector<CallEdgeRecord> all_edges;
   std::vector<ClassRecord> all_classes;
@@ -124,26 +134,27 @@ bool RunParse(const ParseOptions& opts) {
   if (parallel == 0) parallel = 1;
 
   TUProcessor processor = [&](const TUEntry& tu) {
-    int64_t file_id = writer.EnsureFile(project_id, tu.source_file);
+    int64_t file_id;
+    {
+      std::lock_guard<std::mutex> lock(db_mutex);
+      file_id = writer.EnsureFile(project_id, tu.source_file);
+    }
     if (file_id <= 0) return false;
     CallGraphOutput cg_out;
-    if (!RunCallGraphOnTU(tu, &cg_out)) return false;
+    ClassRelationOutput cr_out;
+    DataFlowOutput df_out;
+    ControlFlowOutput cf_out;
+    if (!RunAllAnalysesOnTU(tu, &cg_out, &cr_out, &df_out, &cf_out)) return false;
     for (auto& s : cg_out.symbols) s.def_file_id = file_id;
     for (auto& e : cg_out.edges) e.call_site_file_id = file_id;
-    ClassRelationOutput cr_out;
-    RunClassRelationOnTU(tu, &cr_out);
     for (auto& c : cr_out.classes) {
       c.file_id = file_id;
       c.def_file_id = file_id;
     }
-    DataFlowOutput df_out;
-    RunDataFlowOnTU(tu, &df_out);
     for (auto& g : df_out.global_vars) {
       g.def_file_id = file_id;
       g.file_id = file_id;
     }
-    ControlFlowOutput cf_out;
-    RunControlFlowOnTU(tu, &cf_out);
     for (auto& n : cf_out.nodes) n.file_id = file_id;
     std::lock_guard<std::mutex> lock(collect_mutex);
     for (auto& s : cg_out.symbols) all_symbols.push_back(s);
@@ -170,26 +181,26 @@ bool RunParse(const ParseOptions& opts) {
 
   RunTUPool(tus_to_run, parallel, processor, on_progress);
 
-  if (!conn.BeginTransaction()) return false;
+  if (!conn.BeginTransaction()) return static_cast<int>(ExitCode::kDbWriteFailed);
   auto usr_to_id = writer.WriteSymbols(project_id, all_symbols);
   if (!writer.WriteCallEdges(project_id, all_edges, usr_to_id)) {
     conn.Rollback();
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
   auto class_usr_to_id = writer.WriteClasses(project_id, all_classes);
   if (!writer.WriteClassRelations(project_id, all_relations, class_usr_to_id)) {
     conn.Rollback();
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
   auto var_usr_to_id = writer.WriteGlobalVars(project_id, all_global_vars);
   if (!writer.WriteDataFlowEdges(project_id, all_data_flow_edges, var_usr_to_id, usr_to_id)) {
     conn.Rollback();
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
   std::vector<int64_t> cfg_node_ids = writer.WriteCfgNodes(project_id, all_cfg_nodes, usr_to_id);
   if (!writer.WriteCfgEdges(project_id, all_cfg_edges, cfg_node_ids)) {
     conn.Rollback();
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
   for (const TUEntry& tu : tus_to_run) {
     int64_t file_id = writer.EnsureFile(project_id, tu.source_file);
@@ -198,17 +209,17 @@ bool RunParse(const ParseOptions& opts) {
   }
   if (!conn.Commit()) {
     conn.Rollback();
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
 
   std::string finished = NowUtc();
   if (!UpdateParseRun(conn.Get(), run_id, finished,
                      static_cast<int>(tus_to_run.size()), "completed", "")) {
     LogError("RunParse: UpdateParseRun failed");
-    return false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
   }
   LogInfo("RunParse: done run_id=%ld files=%zu", (long)run_id, tus_to_run.size());
-  return true;
+  return static_cast<int>(ExitCode::kSuccess);
 }
 
 }  // namespace codexray

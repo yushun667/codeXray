@@ -7,6 +7,10 @@
 #ifndef CODEXRAY_PARSER_AST_CALL_GRAPH_ACTION_H_
 #define CODEXRAY_PARSER_AST_CALL_GRAPH_ACTION_H_
 
+#ifdef CODEXRAY_HAVE_CLANG
+namespace clang { class ASTContext; }
+#endif
+
 #include "db/writer/writer.h"
 #include <memory>
 #include <vector>
@@ -26,6 +30,11 @@ struct CallGraphOutput {
  * 无 Clang 时为占位（out 保持空）；有 Clang 时运行 FrontendAction 填充 out。
  */
 bool RunCallGraphOnTU(const TUEntry& tu, CallGraphOutput* out);
+
+#ifdef CODEXRAY_HAVE_CLANG
+/** 在已构建的 AST 上仅运行调用图分析（供单次解析合并用） */
+void RunCallGraphAnalysis(clang::ASTContext& ctx, CallGraphOutput* out);
+#endif
 
 /** 创建 FrontendAction（有 Clang 时返回非空；无 Clang 时返回 nullptr，由 RunCallGraphOnTU 占位） */
 void* CreateCallGraphAction(CallGraphOutput* out);

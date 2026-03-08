@@ -6,6 +6,7 @@
 
 #include "ast/data_flow/action.h"
 #include "compile_commands/load.h"
+#include "common/clang_include_detector.h"
 #include "common/logger.h"
 #include "common/path_util.h"
 #include <string>
@@ -14,6 +15,7 @@
 
 #ifdef CODEXRAY_HAVE_CLANG
 #include "clang/AST/ASTContext.h"
+#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -179,6 +181,12 @@ class DataFlowActionFactory : public tooling::FrontendActionFactory {
 
 }  // namespace
 
+void RunDataFlowAnalysis(clang::ASTContext& ctx, DataFlowOutput* out) {
+  if (!out) return;
+  DataFlowVisitor visitor(&ctx, out);
+  visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+}
+
 bool RunDataFlowOnTU(const TUEntry& tu, DataFlowOutput* out) {
   if (!out) return true;
   std::string dir = tu.working_directory.empty() ? "." : NormalizePath(tu.working_directory);
@@ -190,6 +198,21 @@ bool RunDataFlowOnTU(const TUEntry& tu, DataFlowOutput* out) {
   auto db = std::make_unique<tooling::FixedCompilationDatabase>(
       dir, llvm::ArrayRef<std::string>(tu.compile_args));
   tooling::ClangTool tool(*db, llvm::ArrayRef<std::string>(tu.source_file));
+
+  ClangIncludeEnv env = GetClangIncludeEnv();
+  std::vector<std::string> extra;
+  if (!env.resource_dir.empty()) {
+    extra.push_back("-resource-dir");
+    extra.push_back(env.resource_dir);
+  }
+  for (const std::string& p : env.system_include_paths) {
+    extra.push_back("-isystem");
+    extra.push_back(p);
+  }
+  if (!extra.empty())
+    tool.appendArgumentsAdjuster(
+        tooling::getInsertArgumentAdjuster(extra, tooling::ArgumentInsertPosition::BEGIN));
+
   DataFlowActionFactory factory(out);
   int ret = tool.run(&factory);
   if (ret != 0) {

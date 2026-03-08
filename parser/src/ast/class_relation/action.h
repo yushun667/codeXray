@@ -6,6 +6,10 @@
 #ifndef CODEXRAY_PARSER_AST_CLASS_RELATION_ACTION_H_
 #define CODEXRAY_PARSER_AST_CLASS_RELATION_ACTION_H_
 
+#ifdef CODEXRAY_HAVE_CLANG
+namespace clang { class ASTContext; }
+#endif
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -35,6 +39,10 @@ struct ClassRelationOutput {
 };
 
 bool RunClassRelationOnTU(const TUEntry& tu, ClassRelationOutput* out);
+
+#ifdef CODEXRAY_HAVE_CLANG
+void RunClassRelationAnalysis(clang::ASTContext& ctx, ClassRelationOutput* out);
+#endif
 
 }  // namespace codexray
 

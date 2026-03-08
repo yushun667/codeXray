@@ -7,6 +7,7 @@
 #include "ast/call_graph/action.h"
 #include "ast/function_pointer/analyzer.h"
 #include "compile_commands/load.h"
+#include "common/clang_include_detector.h"
 #include "common/logger.h"
 #include "common/path_util.h"
 #include "db/writer/writer.h"
@@ -15,6 +16,7 @@
 
 #ifdef CODEXRAY_HAVE_CLANG
 #include "clang/AST/ASTContext.h"
+#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -182,6 +184,12 @@ class CallGraphActionFactory : public tooling::FrontendActionFactory {
 
 }  // namespace
 
+void RunCallGraphAnalysis(clang::ASTContext& ctx, CallGraphOutput* out) {
+  if (!out) return;
+  CallGraphVisitor visitor(&ctx, out);
+  visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+}
+
 bool RunCallGraphOnTU(const TUEntry& tu, CallGraphOutput* out) {
   if (!out) {
     LogError("RunCallGraphOnTU: out is null");
@@ -198,6 +206,20 @@ bool RunCallGraphOnTU(const TUEntry& tu, CallGraphOutput* out) {
   auto db = std::make_unique<tooling::FixedCompilationDatabase>(
       dir, llvm::ArrayRef<std::string>(tu.compile_args));
   tooling::ClangTool tool(*db, llvm::ArrayRef<std::string>(tu.source_file));
+
+  ClangIncludeEnv env = GetClangIncludeEnv();
+  std::vector<std::string> extra;
+  if (!env.resource_dir.empty()) {
+    extra.push_back("-resource-dir");
+    extra.push_back(env.resource_dir);
+  }
+  for (const std::string& p : env.system_include_paths) {
+    extra.push_back("-isystem");
+    extra.push_back(p);
+  }
+  if (!extra.empty())
+    tool.appendArgumentsAdjuster(
+        tooling::getInsertArgumentAdjuster(extra, tooling::ArgumentInsertPosition::BEGIN));
 
   CallGraphActionFactory factory(out);
   int ret = tool.run(&factory);

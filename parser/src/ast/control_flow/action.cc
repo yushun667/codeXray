@@ -6,6 +6,7 @@
 
 #include "ast/control_flow/action.h"
 #include "compile_commands/load.h"
+#include "common/clang_include_detector.h"
 #include "common/logger.h"
 #include "common/path_util.h"
 #include <string>
@@ -13,6 +14,7 @@
 
 #ifdef CODEXRAY_HAVE_CLANG
 #include "clang/Analysis/CFG.h"
+#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -163,6 +165,12 @@ class ControlFlowActionFactory : public tooling::FrontendActionFactory {
 
 }  // namespace
 
+void RunControlFlowAnalysis(clang::ASTContext& ctx, ControlFlowOutput* out) {
+  if (!out) return;
+  ControlFlowVisitor visitor(&ctx, out, 0);
+  visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+}
+
 bool RunControlFlowOnTU(const TUEntry& tu, ControlFlowOutput* out) {
   if (!out) return true;
   std::string dir = tu.working_directory.empty() ? "." : NormalizePath(tu.working_directory);
@@ -174,6 +182,21 @@ bool RunControlFlowOnTU(const TUEntry& tu, ControlFlowOutput* out) {
   auto db = std::make_unique<tooling::FixedCompilationDatabase>(
       dir, llvm::ArrayRef<std::string>(tu.compile_args));
   tooling::ClangTool tool(*db, llvm::ArrayRef<std::string>(tu.source_file));
+
+  ClangIncludeEnv env = GetClangIncludeEnv();
+  std::vector<std::string> extra;
+  if (!env.resource_dir.empty()) {
+    extra.push_back("-resource-dir");
+    extra.push_back(env.resource_dir);
+  }
+  for (const std::string& p : env.system_include_paths) {
+    extra.push_back("-isystem");
+    extra.push_back(p);
+  }
+  if (!extra.empty())
+    tool.appendArgumentsAdjuster(
+        tooling::getInsertArgumentAdjuster(extra, tooling::ArgumentInsertPosition::BEGIN));
+
   ControlFlowActionFactory factory(out);
   int ret = tool.run(&factory);
   if (ret != 0) {

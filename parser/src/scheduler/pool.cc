@@ -17,7 +17,7 @@ namespace {
 
 unsigned DefaultParallel() {
   unsigned n = static_cast<unsigned>(std::thread::hardware_concurrency());
-  return n > 2 ? n - 2 : 1;
+  return n > 0 ? n -2 : 1;
 }
 
 }  // namespace
@@ -32,6 +32,8 @@ void RunTUPool(const std::vector<TUEntry>& tus,
   }
   if (parallel == 0) parallel = DefaultParallel();
   if (parallel > tus.size()) parallel = static_cast<unsigned>(tus.size());
+
+  if (on_progress) on_progress(0, tus.size());
 
   std::mutex queue_mutex;
   std::queue<size_t> index_queue;

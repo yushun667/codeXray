@@ -46,14 +46,14 @@ if(LLVM_FOUND)
   endif()
 endif()
 
-# nlohmann/json（可选，compile_commands 解析用）
+# nlohmann/json（必需，compile_commands.json 解析用，禁止手写 JSON 解析）
 find_path(JSON_INCLUDE_DIR nlohmann/json.hpp
-  HINTS /usr/include /usr/local/include
+  HINTS /usr/include /usr/local/include /opt/homebrew/include
 )
-if(JSON_INCLUDE_DIR)
-  set(JSON_FOUND TRUE)
-  set(JSON_INCLUDE_DIRS ${JSON_INCLUDE_DIR})
+if(NOT JSON_INCLUDE_DIR)
+  message(FATAL_ERROR "nlohmann/json not found. Install nlohmann-json3-dev or add -DJSON_INCLUDE_DIR=/path/to/nlohmann")
 endif()
+set(JSON_INCLUDE_DIRS ${JSON_INCLUDE_DIR})
 
 # 可执行体
 add_executable(codexray-parser
@@ -61,6 +61,7 @@ add_executable(codexray-parser
   src/common/logger.cc
   src/common/error_code.cc
   src/common/path_util.cc
+  src/common/clang_include_detector.cc
   src/db/connection.cc
   src/db/schema.cc
   src/compile_commands/load.cc
@@ -74,6 +75,7 @@ add_executable(codexray-parser
   src/ast/class_relation/action.cc
   src/ast/data_flow/action.cc
   src/ast/control_flow/action.cc
+  src/ast/combined/action.cc
   src/driver/orchestrator.cc
   src/query/json_output.cc
   src/cli/parse_args.cc
@@ -110,9 +112,7 @@ if(LLVM_FOUND AND Clang_FOUND)
     clangAST clangLex clangBasic)
 endif()
 
-if(JSON_FOUND)
-  target_include_directories(codexray-parser PRIVATE ${JSON_INCLUDE_DIRS})
-endif()
+target_include_directories(codexray-parser PRIVATE ${JSON_INCLUDE_DIRS})
 
 # 安装到 bin（供主仓库 getParserPath 使用）
 install(TARGETS codexray-parser RUNTIME DESTINATION bin)

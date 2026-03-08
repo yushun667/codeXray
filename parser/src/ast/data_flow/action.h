@@ -6,6 +6,10 @@
 #ifndef CODEXRAY_PARSER_AST_DATA_FLOW_ACTION_H_
 #define CODEXRAY_PARSER_AST_DATA_FLOW_ACTION_H_
 
+#ifdef CODEXRAY_HAVE_CLANG
+namespace clang { class ASTContext; }
+#endif
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -38,6 +42,10 @@ struct DataFlowOutput {
 };
 
 bool RunDataFlowOnTU(const TUEntry& tu, DataFlowOutput* out);
+
+#ifdef CODEXRAY_HAVE_CLANG
+void RunDataFlowAnalysis(clang::ASTContext& ctx, DataFlowOutput* out);
+#endif
 
 }  // namespace codexray
 
