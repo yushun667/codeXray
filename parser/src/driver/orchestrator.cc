@@ -17,6 +17,7 @@
 #include <sqlite3.h>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
@@ -121,6 +122,7 @@ int RunParse(const ParseOptions& opts) {
 
   std::mutex collect_mutex;
   std::mutex db_mutex;
+  std::unordered_map<std::string, int64_t> file_id_by_path;
   std::vector<SymbolRecord> all_symbols;
   std::vector<CallEdgeRecord> all_edges;
   std::vector<ClassRecord> all_classes;
@@ -157,6 +159,7 @@ int RunParse(const ParseOptions& opts) {
     }
     for (auto& n : cf_out.nodes) n.file_id = file_id;
     std::lock_guard<std::mutex> lock(collect_mutex);
+    file_id_by_path[tu.source_file] = file_id;
     for (auto& s : cg_out.symbols) all_symbols.push_back(s);
     for (auto& e : cg_out.edges) all_edges.push_back(e);
     for (auto& c : cr_out.classes) all_classes.push_back(c);
@@ -174,9 +177,10 @@ int RunParse(const ParseOptions& opts) {
     return true;
   };
 
+  const size_t total_steps = tus_to_run.size() + 1;  // +1 for DB write phase
   ProgressCallback on_progress = [&](size_t done, size_t total) {
     LogInfo("RunParse progress: %zu/%zu", done, total);
-    if (opts.progress_stdout) opts.progress_stdout(done, total);
+    if (opts.progress_stdout) opts.progress_stdout(done, total_steps);
   };
 
   RunTUPool(tus_to_run, parallel, processor, on_progress);
@@ -203,9 +207,9 @@ int RunParse(const ParseOptions& opts) {
     return static_cast<int>(ExitCode::kDbWriteFailed);
   }
   for (const TUEntry& tu : tus_to_run) {
-    int64_t file_id = writer.EnsureFile(project_id, tu.source_file);
-    if (file_id > 0)
-      writer.UpdateParsedFile(project_id, file_id, run_id, 0, "");
+    auto it = file_id_by_path.find(tu.source_file);
+    if (it != file_id_by_path.end() && it->second > 0)
+      writer.UpdateParsedFile(project_id, it->second, run_id, 0, "");
   }
   if (!conn.Commit()) {
     conn.Rollback();
@@ -218,6 +222,7 @@ int RunParse(const ParseOptions& opts) {
     LogError("RunParse: UpdateParseRun failed");
     return static_cast<int>(ExitCode::kDbWriteFailed);
   }
+  if (opts.progress_stdout) opts.progress_stdout(total_steps, total_steps);
   LogInfo("RunParse: done run_id=%ld files=%zu", (long)run_id, tus_to_run.size());
   return static_cast<int>(ExitCode::kSuccess);
 }

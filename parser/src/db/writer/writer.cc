@@ -142,21 +142,28 @@ bool DBWriter::WriteCallEdges(int64_t project_id,
                               const std::vector<CallEdgeRecord>& edges,
                               const std::unordered_map<std::string, int64_t>& usr_to_id) {
   if (!db_ || edges.empty()) return true;
+  std::unordered_map<std::string, int64_t> resolved(usr_to_id);
   const char* sql = "INSERT INTO call_edge(caller_id,callee_id,call_site_file_id,call_site_line,call_site_column,edge_type)"
                     " VALUES(?,?,?,?,?,?)";
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
   for (const auto& e : edges) {
     int64_t caller_id = 0, callee_id = 0;
-    auto it = usr_to_id.find(e.caller_usr);
-    if (it != usr_to_id.end()) caller_id = it->second;
-    else caller_id = GetSymbolIdByUsr(db_, e.caller_usr);
+    auto it = resolved.find(e.caller_usr);
+    if (it != resolved.end()) caller_id = it->second;
+    else {
+      caller_id = GetSymbolIdByUsr(db_, e.caller_usr);
+      if (caller_id > 0) resolved[e.caller_usr] = caller_id;
+    }
     if (caller_id == 0) continue;
-    it = usr_to_id.find(e.callee_usr);
-    if (it != usr_to_id.end()) callee_id = it->second;
-    else callee_id = GetSymbolIdByUsr(db_, e.callee_usr);
-    if (callee_id == 0)
-      callee_id = InsertPlaceholderSymbol(db_, e.call_site_file_id, e.callee_usr, e.callee_usr);
+    it = resolved.find(e.callee_usr);
+    if (it != resolved.end()) callee_id = it->second;
+    else {
+      callee_id = GetSymbolIdByUsr(db_, e.callee_usr);
+      if (callee_id == 0)
+        callee_id = InsertPlaceholderSymbol(db_, e.call_site_file_id, e.callee_usr, e.callee_usr);
+      if (callee_id > 0) resolved[e.callee_usr] = callee_id;
+    }
     if (callee_id == 0) continue;
     sqlite3_reset(stmt);
     sqlite3_bind_int64(stmt, 1, caller_id);

@@ -40,6 +40,9 @@ bool Connection::Open(const std::string& path) {
     }
     return false;
   }
+  Execute("PRAGMA journal_mode=WAL");
+  Execute("PRAGMA synchronous=NORMAL");
+  Execute("PRAGMA cache_size=-64000");
   LogInfo("db opened: %s", path.c_str());
   return true;
 }
