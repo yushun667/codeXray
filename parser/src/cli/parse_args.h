@@ -17,7 +17,9 @@ struct QueryOptions {
   std::string project_root;
   std::string query_type;   // call_graph | class_graph | data_flow | control_flow
   std::string symbol;
-  std::string file_path;
+  std::string file_path;    // 与 line 同时给出时按「文件+行号」解析符号
+  int line = 0;
+  int column = 0;
   int depth = 3;
 };
 

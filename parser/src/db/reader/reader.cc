@@ -11,9 +11,26 @@ namespace codexray {
 
 namespace {
 
+static const char kSymbolSelectWhereUsr[] =
+    "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
+    "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE usr = ?";
+static const char kSymbolSelectWhereDefFile[] =
+    "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
+    "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE def_file_id = ?";
+
 std::string ColText(sqlite3_stmt* stmt, int col) {
   const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
   return p ? std::string(p) : "";
+}
+
+int ColInt(sqlite3_stmt* stmt, int col) {
+  if (sqlite3_column_type(stmt, col) == SQLITE_NULL) return 0;
+  return sqlite3_column_int(stmt, col);
+}
+
+int64_t ColInt64(sqlite3_stmt* stmt, int col) {
+  if (sqlite3_column_type(stmt, col) == SQLITE_NULL) return 0;
+  return sqlite3_column_int64(stmt, col);
 }
 
 SymbolRow SymbolFromStmt(sqlite3_stmt* stmt) {
@@ -28,6 +45,11 @@ SymbolRow SymbolFromStmt(sqlite3_stmt* stmt) {
   r.def_column = sqlite3_column_int(stmt, 7);
   r.def_line_end = sqlite3_column_int(stmt, 8);
   r.def_column_end = sqlite3_column_int(stmt, 9);
+  r.decl_file_id = ColInt64(stmt, 10);
+  r.decl_line = ColInt(stmt, 11);
+  r.decl_column = ColInt(stmt, 12);
+  r.decl_line_end = ColInt(stmt, 13);
+  r.decl_column_end = ColInt(stmt, 14);
   return r;
 }
 
@@ -37,7 +59,7 @@ SymbolRow QuerySymbolByUsr(sqlite3* db, const std::string& usr) {
   SymbolRow r;
   if (!db) return r;
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end FROM symbol WHERE usr = ?", -1, &stmt, nullptr) != SQLITE_OK)
+  if (sqlite3_prepare_v2(db, kSymbolSelectWhereUsr, -1, &stmt, nullptr) != SQLITE_OK)
     return r;
   sqlite3_bind_text(stmt, 1, usr.c_str(), -1, SQLITE_TRANSIENT);
   if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -50,9 +72,41 @@ std::vector<SymbolRow> QuerySymbolsByFile(sqlite3* db, int64_t file_id) {
   std::vector<SymbolRow> out;
   if (!db) return out;
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end FROM symbol WHERE def_file_id = ?", -1, &stmt, nullptr) != SQLITE_OK)
+  if (sqlite3_prepare_v2(db, kSymbolSelectWhereDefFile, -1, &stmt, nullptr) != SQLITE_OK)
     return out;
   sqlite3_bind_int64(stmt, 1, file_id);
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    out.push_back(SymbolFromStmt(stmt));
+  }
+  sqlite3_finalize(stmt);
+  return out;
+}
+
+std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id, int line, int column_hint) {
+  std::vector<SymbolRow> out;
+  if (!db) return out;
+  const char* sql = (column_hint != 0)
+      ? "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
+        "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE "
+        "((def_file_id=? AND def_line=? AND def_column=?) OR (decl_file_id=? AND decl_line=? AND decl_column=?))"
+      : "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
+        "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE "
+        "((def_file_id=? AND def_line=?) OR (decl_file_id=? AND decl_line=?))";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
+  if (column_hint != 0) {
+    sqlite3_bind_int64(stmt, 1, file_id);
+    sqlite3_bind_int(stmt, 2, line);
+    sqlite3_bind_int(stmt, 3, column_hint);
+    sqlite3_bind_int64(stmt, 4, file_id);
+    sqlite3_bind_int(stmt, 5, line);
+    sqlite3_bind_int(stmt, 6, column_hint);
+  } else {
+    sqlite3_bind_int64(stmt, 1, file_id);
+    sqlite3_bind_int(stmt, 2, line);
+    sqlite3_bind_int64(stmt, 3, file_id);
+    sqlite3_bind_int(stmt, 4, line);
+  }
   while (sqlite3_step(stmt) == SQLITE_ROW) {
     out.push_back(SymbolFromStmt(stmt));
   }

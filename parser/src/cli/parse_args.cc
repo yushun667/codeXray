@@ -78,6 +78,14 @@ Subcommand ParseArgs(int argc, char* argv[],
       if (ConsumeArg(&i, argc, argv, "--type", &query_opts->query_type)) continue;
       if (ConsumeArg(&i, argc, argv, "--symbol", &query_opts->symbol)) continue;
       if (ConsumeArg(&i, argc, argv, "--file", &query_opts->file_path)) continue;
+      if (ConsumeArg(&i, argc, argv, "--line", &s)) {
+        query_opts->line = std::atoi(s.c_str());
+        continue;
+      }
+      if (ConsumeArg(&i, argc, argv, "--column", &s)) {
+        query_opts->column = std::atoi(s.c_str());
+        continue;
+      }
       if (ConsumeArg(&i, argc, argv, "--depth", &s)) {
         query_opts->depth = std::atoi(s.c_str());
         if (query_opts->depth <= 0) query_opts->depth = 3;

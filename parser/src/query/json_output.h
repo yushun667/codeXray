@@ -21,6 +21,10 @@ std::string QueryDataFlowJson(sqlite3* db, const std::string& symbol,
 std::string QueryControlFlowJson(sqlite3* db, const std::string& symbol,
                                  const std::string& file);
 
+/** 按文件+行号查询符号，返回 JSON 数组（含 definition/declaration 与 USR） */
+std::string QuerySymbolAtLocationJson(sqlite3* db, int64_t project_id,
+                                      const std::string& file_path, int line, int column);
+
 }  // namespace codexray
 
 #endif  // CODEXRAY_PARSER_QUERY_JSON_OUTPUT_H_

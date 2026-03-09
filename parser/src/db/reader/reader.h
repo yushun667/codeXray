@@ -25,7 +25,13 @@ struct SymbolRow {
   int def_column = 0;
   int def_line_end = 0;
   int def_column_end = 0;
-  std::string def_file_path;  // 由调用方或二次查询填充
+  int64_t decl_file_id = 0;
+  int decl_line = 0;
+  int decl_column = 0;
+  int decl_line_end = 0;
+  int decl_column_end = 0;
+  std::string def_file_path;   // 由调用方或二次查询填充
+  std::string decl_file_path;  // 由调用方或二次查询填充
 };
 
 struct CallEdgeRow {
@@ -43,8 +49,11 @@ struct CallEdgeRow {
 /** 按 USR 查单个 symbol，不存在返回空 optional（id=0） */
 SymbolRow QuerySymbolByUsr(sqlite3* db, const std::string& usr);
 
-/** 按 file_id 查该文件下所有 symbol */
+/** 按 file_id 查该文件下所有 symbol（按 def 位置） */
 std::vector<SymbolRow> QuerySymbolsByFile(sqlite3* db, int64_t file_id);
+
+/** 按文件+行号查符号：def 或 decl 位于 (file_id, line) 的 symbol；column_hint 可选，非 0 时同时匹配列 */
+std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id, int line, int column_hint = 0);
 
 /**
  * 查调用边：by_caller=true 时以 caller_usr 为起点查其发出的边；

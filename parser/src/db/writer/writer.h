@@ -28,6 +28,14 @@ struct SymbolRecord {
   int def_column = 0;
   int def_line_end = 0;
   int def_column_end = 0;
+  int64_t decl_file_id = 0;
+  int decl_line = 0;
+  int decl_column = 0;
+  int decl_line_end = 0;
+  int decl_column_end = 0;
+  /** 解析时：定义/声明是否位于当前 TU 主文件，供 driver 填 def_file_id/decl_file_id */
+  bool def_in_tu_file = false;
+  bool decl_in_tu_file = false;
 };
 
 struct CallEdgeRecord {

@@ -8,6 +8,7 @@
 #include "common/logger.h"
 #include <sqlite3.h>
 #include <string>
+#include <cstring>
 
 namespace codexray {
 
@@ -20,6 +21,27 @@ static bool RunStatements(sqlite3* db, const std::string& sql) {
     return false;
   }
   return true;
+}
+
+/** 为 symbol 表增加声明位置列（迁移：已存在则忽略） */
+static void MigrateSymbolDeclColumns(sqlite3* db) {
+  const char* cols[] = {
+    "ALTER TABLE symbol ADD COLUMN decl_file_id INTEGER REFERENCES file(id)",
+    "ALTER TABLE symbol ADD COLUMN decl_line INTEGER",
+    "ALTER TABLE symbol ADD COLUMN decl_column INTEGER",
+    "ALTER TABLE symbol ADD COLUMN decl_line_end INTEGER",
+    "ALTER TABLE symbol ADD COLUMN decl_column_end INTEGER",
+  };
+  for (const char* sql : cols) {
+    char* err = nullptr;
+    int r = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (r != SQLITE_OK && err && std::strstr(err, "duplicate") == nullptr) {
+      LogError("schema migration: %s", err);
+    }
+    if (err) sqlite3_free(err);
+  }
+  RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_symbol_def_file_line ON symbol(def_file_id, def_line)");
+  RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_symbol_decl_file_line ON symbol(decl_file_id, decl_line)");
 }
 
 bool EnsureSchema(sqlite3* db) {
@@ -175,6 +197,7 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edge_from_to ON cfg_edge(from_node_id, to_nod
 )sql";
 
   if (!RunStatements(db, tables)) return false;
+  MigrateSymbolDeclColumns(db);
   LogInfo("EnsureSchema: done");
   return true;
 }

@@ -33,11 +33,21 @@ std::string CallGraphNodeJson(const SymbolRow& s) {
   EscapeJson(s.usr, o);
   o << ",\"name\":";
   EscapeJson(s.name, o);
+  o << ",\"kind\":";
+  EscapeJson(s.kind.empty() ? "function" : s.kind, o);
   o << ",\"definition\":{\"file\":";
   EscapeJson(s.def_file_path.empty() ? std::to_string(s.def_file_id) : s.def_file_path, o);
   o << ",\"line\":" << s.def_line << ",\"column\":" << s.def_column << "}";
   o << ",\"definition_range\":{\"start_line\":" << s.def_line << ",\"start_column\":" << s.def_column;
-  o << ",\"end_line\":" << s.def_line_end << ",\"end_column\":" << s.def_column_end << "}}";
+  o << ",\"end_line\":" << s.def_line_end << ",\"end_column\":" << s.def_column_end << "}";
+  if (s.decl_file_id != 0 || s.decl_line != 0) {
+    o << ",\"declaration\":{\"file\":";
+    EscapeJson(s.decl_file_path.empty() ? std::to_string(s.decl_file_id) : s.decl_file_path, o);
+    o << ",\"line\":" << s.decl_line << ",\"column\":" << s.decl_column << "}";
+    o << ",\"declaration_range\":{\"start_line\":" << s.decl_line << ",\"start_column\":" << s.decl_column;
+    o << ",\"end_line\":" << s.decl_line_end << ",\"end_column\":" << s.decl_column_end << "}";
+  }
+  o << "}";
   return o.str();
 }
 
@@ -65,7 +75,7 @@ std::string QueryCallGraphJson(sqlite3* db, const std::string& symbol,
   SymbolRow start = QuerySymbolByUsr(db, symbol);
   if (start.id == 0 && !symbol.empty()) {
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db, "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end FROM symbol WHERE name = ? OR qualified_name LIKE ? LIMIT 1", -1, &stmt, nullptr) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE name = ? OR qualified_name LIKE ? LIMIT 1", -1, &stmt, nullptr) == SQLITE_OK) {
       std::string pat = "%" + symbol + "%";
       sqlite3_bind_text(stmt, 1, symbol.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_text(stmt, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
@@ -80,6 +90,11 @@ std::string QueryCallGraphJson(sqlite3* db, const std::string& symbol,
         start.def_column = sqlite3_column_int(stmt, 7);
         start.def_line_end = sqlite3_column_int(stmt, 8);
         start.def_column_end = sqlite3_column_int(stmt, 9);
+        start.decl_file_id = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? sqlite3_column_int64(stmt, 10) : 0;
+        start.decl_line = sqlite3_column_type(stmt, 11) != SQLITE_NULL ? sqlite3_column_int(stmt, 11) : 0;
+        start.decl_column = sqlite3_column_type(stmt, 12) != SQLITE_NULL ? sqlite3_column_int(stmt, 12) : 0;
+        start.decl_line_end = sqlite3_column_type(stmt, 13) != SQLITE_NULL ? sqlite3_column_int(stmt, 13) : 0;
+        start.decl_column_end = sqlite3_column_type(stmt, 14) != SQLITE_NULL ? sqlite3_column_int(stmt, 14) : 0;
       }
       sqlite3_finalize(stmt);
     }
@@ -323,17 +338,24 @@ std::string QueryControlFlowJson(sqlite3* db, const std::string& symbol,
   SymbolRow sym = QuerySymbolByUsr(db, symbol);
   if (sym.id == 0 && !symbol.empty()) {
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db, "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end FROM symbol WHERE name = ? AND kind = 'function' LIMIT 1", -1, &stmt, nullptr) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE name = ? AND (kind = 'function' OR kind = 'method' OR kind = 'constructor' OR kind = 'destructor') LIMIT 1", -1, &stmt, nullptr) == SQLITE_OK) {
       sqlite3_bind_text(stmt, 1, symbol.c_str(), -1, SQLITE_TRANSIENT);
       if (sqlite3_step(stmt) == SQLITE_ROW) {
         sym.id = sqlite3_column_int64(stmt, 0);
         sym.usr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         sym.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        sym.qualified_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        sym.kind = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
         sym.def_file_id = sqlite3_column_int64(stmt, 5);
         sym.def_line = sqlite3_column_int(stmt, 6);
         sym.def_column = sqlite3_column_int(stmt, 7);
         sym.def_line_end = sqlite3_column_int(stmt, 8);
         sym.def_column_end = sqlite3_column_int(stmt, 9);
+        sym.decl_file_id = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? sqlite3_column_int64(stmt, 10) : 0;
+        sym.decl_line = sqlite3_column_type(stmt, 11) != SQLITE_NULL ? sqlite3_column_int(stmt, 11) : 0;
+        sym.decl_column = sqlite3_column_type(stmt, 12) != SQLITE_NULL ? sqlite3_column_int(stmt, 12) : 0;
+        sym.decl_line_end = sqlite3_column_type(stmt, 13) != SQLITE_NULL ? sqlite3_column_int(stmt, 13) : 0;
+        sym.decl_column_end = sqlite3_column_type(stmt, 14) != SQLITE_NULL ? sqlite3_column_int(stmt, 14) : 0;
       }
       sqlite3_finalize(stmt);
     }
@@ -369,6 +391,27 @@ std::string QueryControlFlowJson(sqlite3* db, const std::string& symbol,
     out << "}";
   }
   out << "]}";
+  return out.str();
+}
+
+std::string QuerySymbolAtLocationJson(sqlite3* db, int64_t project_id,
+                                      const std::string& file_path, int line, int column) {
+  if (!db || line <= 0) return "[]";
+  int64_t file_id = QueryFileIdByPath(db, project_id, file_path);
+  if (file_id == 0) return "[]";
+  std::vector<SymbolRow> symbols = QuerySymbolsByFileAndLine(db, file_id, line, column);
+  if (symbols.empty()) return "[]";
+  for (auto& s : symbols) {
+    if (s.def_file_id) s.def_file_path = QueryFilePath(db, s.def_file_id);
+    if (s.decl_file_id) s.decl_file_path = QueryFilePath(db, s.decl_file_id);
+  }
+  std::ostringstream out;
+  out << "[";
+  for (size_t i = 0; i < symbols.size(); ++i) {
+    if (i) out << ",";
+    out << CallGraphNodeJson(symbols[i]);
+  }
+  out << "]";
   return out.str();
 }
 

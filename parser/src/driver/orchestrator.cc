@@ -123,7 +123,7 @@ int RunParse(const ParseOptions& opts) {
   std::mutex collect_mutex;
   std::mutex db_mutex;
   std::unordered_map<std::string, int64_t> file_id_by_path;
-  std::vector<SymbolRecord> all_symbols;
+  std::unordered_map<std::string, SymbolRecord> symbol_by_usr;
   std::vector<CallEdgeRecord> all_edges;
   std::vector<ClassRecord> all_classes;
   std::vector<ClassRelationRecord> all_relations;
@@ -147,7 +147,10 @@ int RunParse(const ParseOptions& opts) {
     DataFlowOutput df_out;
     ControlFlowOutput cf_out;
     if (!RunAllAnalysesOnTU(tu, &cg_out, &cr_out, &df_out, &cf_out)) return false;
-    for (auto& s : cg_out.symbols) s.def_file_id = file_id;
+    for (auto& s : cg_out.symbols) {
+      s.def_file_id = s.def_in_tu_file ? file_id : 0;
+      s.decl_file_id = s.decl_in_tu_file ? file_id : 0;
+    }
     for (auto& e : cg_out.edges) e.call_site_file_id = file_id;
     for (auto& c : cr_out.classes) {
       c.file_id = file_id;
@@ -160,7 +163,30 @@ int RunParse(const ParseOptions& opts) {
     for (auto& n : cf_out.nodes) n.file_id = file_id;
     std::lock_guard<std::mutex> lock(collect_mutex);
     file_id_by_path[tu.source_file] = file_id;
-    for (auto& s : cg_out.symbols) all_symbols.push_back(s);
+    for (auto& s : cg_out.symbols) {
+      auto it = symbol_by_usr.find(s.usr);
+      if (it == symbol_by_usr.end()) {
+        symbol_by_usr[s.usr] = std::move(s);
+      } else {
+        SymbolRecord& e = it->second;
+        if (s.def_file_id && !e.def_file_id) {
+          e.def_file_id = s.def_file_id;
+          e.def_line = s.def_line;
+          e.def_column = s.def_column;
+          e.def_line_end = s.def_line_end;
+          e.def_column_end = s.def_column_end;
+        }
+        if (s.decl_file_id && !e.decl_file_id) {
+          e.decl_file_id = s.decl_file_id;
+          e.decl_line = s.decl_line;
+          e.decl_column = s.decl_column;
+          e.decl_line_end = s.decl_line_end;
+          e.decl_column_end = s.decl_column_end;
+        }
+        if (e.kind == "function" && (s.kind == "method" || s.kind == "constructor" || s.kind == "destructor"))
+          e.kind = s.kind;
+      }
+    }
     for (auto& e : cg_out.edges) all_edges.push_back(e);
     for (auto& c : cr_out.classes) all_classes.push_back(c);
     for (auto& r : cr_out.relations) all_relations.push_back(r);
@@ -184,6 +210,10 @@ int RunParse(const ParseOptions& opts) {
   };
 
   RunTUPool(tus_to_run, parallel, processor, on_progress);
+
+  std::vector<SymbolRecord> all_symbols;
+  all_symbols.reserve(symbol_by_usr.size());
+  for (auto& kv : symbol_by_usr) all_symbols.push_back(std::move(kv.second));
 
   if (!conn.BeginTransaction()) return static_cast<int>(ExitCode::kDbWriteFailed);
   auto usr_to_id = writer.WriteSymbols(project_id, all_symbols);

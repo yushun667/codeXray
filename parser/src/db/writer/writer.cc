@@ -115,10 +115,25 @@ std::unordered_map<std::string, int64_t> DBWriter::WriteSymbols(
     const std::vector<SymbolRecord>& symbols) {
   std::unordered_map<std::string, int64_t> usr_to_id;
   if (!db_ || symbols.empty()) return usr_to_id;
-  const char* sql = "INSERT INTO symbol(usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)";
+  const char* sql = "INSERT INTO symbol(usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(usr) DO UPDATE SET name=excluded.name,qualified_name=excluded.qualified_name,kind=excluded.kind,"
+                    " def_file_id=CASE WHEN excluded.def_file_id!=0 THEN excluded.def_file_id ELSE symbol.def_file_id END,"
+                    " def_line=CASE WHEN excluded.def_line!=0 THEN excluded.def_line ELSE symbol.def_line END,"
+                    " def_column=CASE WHEN excluded.def_column!=0 THEN excluded.def_column ELSE symbol.def_column END,"
+                    " def_line_end=CASE WHEN excluded.def_line_end!=0 THEN excluded.def_line_end ELSE symbol.def_line_end END,"
+                    " def_column_end=CASE WHEN excluded.def_column_end!=0 THEN excluded.def_column_end ELSE symbol.def_column_end END,"
+                    " decl_file_id=CASE WHEN excluded.decl_file_id!=0 THEN excluded.decl_file_id ELSE COALESCE(symbol.decl_file_id,0) END,"
+                    " decl_line=CASE WHEN excluded.decl_line!=0 THEN excluded.decl_line ELSE COALESCE(symbol.decl_line,0) END,"
+                    " decl_column=CASE WHEN excluded.decl_column!=0 THEN excluded.decl_column ELSE COALESCE(symbol.decl_column,0) END,"
+                    " decl_line_end=CASE WHEN excluded.decl_line_end!=0 THEN excluded.decl_line_end ELSE COALESCE(symbol.decl_line_end,0) END,"
+                    " decl_column_end=CASE WHEN excluded.decl_column_end!=0 THEN excluded.decl_column_end ELSE COALESCE(symbol.decl_column_end,0) END";
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+  sqlite3_stmt* sel = nullptr;
+  if (sqlite3_prepare_v2(db_, "SELECT id FROM symbol WHERE usr = ?", -1, &sel, nullptr) != SQLITE_OK) {
+    sqlite3_finalize(stmt);
+    return usr_to_id;
+  }
   for (const auto& s : symbols) {
     sqlite3_reset(stmt);
     sqlite3_bind_text(stmt, 1, s.usr.c_str(), -1, SQLITE_TRANSIENT);
@@ -130,11 +145,20 @@ std::unordered_map<std::string, int64_t> DBWriter::WriteSymbols(
     sqlite3_bind_int(stmt, 7, s.def_column);
     sqlite3_bind_int(stmt, 8, s.def_line_end);
     sqlite3_bind_int(stmt, 9, s.def_column_end);
-    if (sqlite3_step(stmt) == SQLITE_DONE)
-      usr_to_id[s.usr] = LastInsertId(db_);
+    sqlite3_bind_int64(stmt, 10, s.decl_file_id);
+    sqlite3_bind_int(stmt, 11, s.decl_line);
+    sqlite3_bind_int(stmt, 12, s.decl_column);
+    sqlite3_bind_int(stmt, 13, s.decl_line_end);
+    sqlite3_bind_int(stmt, 14, s.decl_column_end);
+    if (sqlite3_step(stmt) != SQLITE_DONE) continue;
+    sqlite3_reset(sel);
+    sqlite3_bind_text(sel, 1, s.usr.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(sel) == SQLITE_ROW)
+      usr_to_id[s.usr] = sqlite3_column_int64(sel, 0);
   }
+  sqlite3_finalize(sel);
   sqlite3_finalize(stmt);
-  LogInfo("WriteSymbols: inserted %zu symbols", usr_to_id.size());
+  LogInfo("WriteSymbols: inserted/updated %zu symbols", usr_to_id.size());
   return usr_to_id;
 }
 

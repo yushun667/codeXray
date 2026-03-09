@@ -16,9 +16,12 @@
 
 #ifdef CODEXRAY_HAVE_CLANG
 #include "clang/AST/ASTContext.h"
-#include "clang/Tooling/ArgumentsAdjusters.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
+#include "clang/Basic/SourceManager.h"
+#include "llvm/Support/Casting.h"
+#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Index/USRGeneration.h"
@@ -47,11 +50,11 @@ namespace {
 
 using namespace clang;
 
-static int GetLine(SourceManager& SM, SourceLocation loc) {
+static int GetLine(const SourceManager& SM, SourceLocation loc) {
   if (loc.isInvalid()) return 0;
   return SM.getSpellingLineNumber(loc);
 }
-static int GetColumn(SourceManager& SM, SourceLocation loc) {
+static int GetColumn(const SourceManager& SM, SourceLocation loc) {
   if (loc.isInvalid()) return 0;
   return SM.getSpellingColumnNumber(loc);
 }
@@ -65,19 +68,21 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
     if (!D || !out_) return true;
     if (D->isImplicit() || !D->getLocation().isValid())
       return RecursiveASTVisitor::TraverseFunctionDecl(D);
-    if (!D->isThisDeclarationADefinition())
-      return RecursiveASTVisitor::TraverseFunctionDecl(D);
     SymbolRecord sym = SymbolFromDecl(D);
     if (sym.usr.empty()) return RecursiveASTVisitor::TraverseFunctionDecl(D);
-    function_usr_stack_.push_back(current_function_usr_);
-    current_function_usr_ = sym.usr;
-    out_->symbols.push_back(std::move(sym));
+    out_->symbols.push_back(sym);
+    if (D->isThisDeclarationADefinition()) {
+      function_usr_stack_.push_back(current_function_usr_);
+      current_function_usr_ = sym.usr;
+    }
     bool ok = RecursiveASTVisitor::TraverseFunctionDecl(D);
-    if (!function_usr_stack_.empty()) {
-      current_function_usr_ = function_usr_stack_.back();
-      function_usr_stack_.pop_back();
-    } else {
-      current_function_usr_.clear();
+    if (D->isThisDeclarationADefinition()) {
+      if (!function_usr_stack_.empty()) {
+        current_function_usr_ = function_usr_stack_.back();
+        function_usr_stack_.pop_back();
+      } else {
+        current_function_usr_.clear();
+      }
     }
     return ok;
   }
@@ -138,12 +143,37 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
       if (!dc->isTranslationUnit())
         sym.qualified_name = D->getQualifiedNameAsString();
     if (sym.qualified_name.empty()) sym.qualified_name = sym.name;
-    sym.kind = "function";
-    SourceLocation start = D->getBeginLoc(), end = D->getEndLoc();
-    sym.def_line = GetLine(*sm_, start);
-    sym.def_column = GetColumn(*sm_, start);
-    sym.def_line_end = GetLine(*sm_, end);
-    sym.def_column_end = GetColumn(*sm_, end);
+    if (dyn_cast<CXXConstructorDecl>(D)) sym.kind = "constructor";
+    else if (dyn_cast<CXXDestructorDecl>(D)) sym.kind = "destructor";
+    else if (dyn_cast<CXXMethodDecl>(D)) sym.kind = "method";
+    else sym.kind = "function";
+    const SourceManager& SM = *sm_;
+    FileID mainFID = SM.getMainFileID();
+    SourceLocation declLoc = D->getLocation();
+    if (declLoc.isValid()) {
+      sym.decl_line = GetLine(SM, declLoc);
+      sym.decl_column = GetColumn(SM, declLoc);
+      sym.decl_in_tu_file = (SM.getFileID(declLoc) == mainFID);
+      const Decl* can = D->getCanonicalDecl();
+      if (can && can != D) {
+        SourceLocation canEnd = can->getEndLoc();
+        if (canEnd.isValid()) {
+          sym.decl_line_end = GetLine(SM, canEnd);
+          sym.decl_column_end = GetColumn(SM, canEnd);
+        }
+      } else {
+        sym.decl_line_end = sym.decl_line;
+        sym.decl_column_end = sym.decl_column;
+      }
+    }
+    if (D->isThisDeclarationADefinition()) {
+      SourceLocation start = D->getBeginLoc(), end = D->getEndLoc();
+      sym.def_line = GetLine(SM, start);
+      sym.def_column = GetColumn(SM, start);
+      sym.def_line_end = GetLine(SM, end);
+      sym.def_column_end = GetColumn(SM, end);
+      sym.def_in_tu_file = (SM.getFileID(start) == mainFID);
+    }
     return sym;
   }
 };
