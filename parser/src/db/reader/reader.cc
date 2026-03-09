@@ -82,30 +82,39 @@ std::vector<SymbolRow> QuerySymbolsByFile(sqlite3* db, int64_t file_id) {
   return out;
 }
 
+/* 按位置查符号：def/decl 范围覆盖 (line, column_hint)；设计 §3.14 行号在 [def_line, def_line_end] 内 */
 std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id, int line, int column_hint) {
   std::vector<SymbolRow> out;
-  if (!db) return out;
+  if (!db || line <= 0) return out;
   const char* sql = (column_hint != 0)
       ? "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
         "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE "
-        "((def_file_id=? AND def_line=? AND def_column=?) OR (decl_file_id=? AND decl_line=? AND decl_column=?))"
+        "(def_file_id=? AND ?>=def_line AND (def_line_end=0 OR ?<=def_line_end) AND ?>=def_column AND (def_column_end=0 OR ?<=def_column_end)) "
+        "OR (decl_file_id=? AND decl_file_id!=0 AND ?>=decl_line AND (decl_line_end=0 OR ?<=decl_line_end) AND ?>=decl_column AND (decl_column_end=0 OR ?<=decl_column_end))"
       : "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
         "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE "
-        "((def_file_id=? AND def_line=?) OR (decl_file_id=? AND decl_line=?))";
+        "(def_file_id=? AND ?>=def_line AND (def_line_end=0 OR ?<=def_line_end)) "
+        "OR (decl_file_id=? AND decl_file_id!=0 AND ?>=decl_line AND (decl_line_end=0 OR ?<=decl_line_end))";
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
   if (column_hint != 0) {
     sqlite3_bind_int64(stmt, 1, file_id);
     sqlite3_bind_int(stmt, 2, line);
-    sqlite3_bind_int(stmt, 3, column_hint);
-    sqlite3_bind_int64(stmt, 4, file_id);
-    sqlite3_bind_int(stmt, 5, line);
-    sqlite3_bind_int(stmt, 6, column_hint);
+    sqlite3_bind_int(stmt, 3, line);
+    sqlite3_bind_int(stmt, 4, column_hint);
+    sqlite3_bind_int(stmt, 5, column_hint);
+    sqlite3_bind_int64(stmt, 6, file_id);
+    sqlite3_bind_int(stmt, 7, line);
+    sqlite3_bind_int(stmt, 8, line);
+    sqlite3_bind_int(stmt, 9, column_hint);
+    sqlite3_bind_int(stmt, 10, column_hint);
   } else {
     sqlite3_bind_int64(stmt, 1, file_id);
     sqlite3_bind_int(stmt, 2, line);
-    sqlite3_bind_int64(stmt, 3, file_id);
-    sqlite3_bind_int(stmt, 4, line);
+    sqlite3_bind_int(stmt, 3, line);
+    sqlite3_bind_int64(stmt, 4, file_id);
+    sqlite3_bind_int(stmt, 5, line);
+    sqlite3_bind_int(stmt, 6, line);
   }
   while (sqlite3_step(stmt) == SQLITE_ROW) {
     out.push_back(SymbolFromStmt(stmt));
@@ -208,6 +217,18 @@ int64_t QueryFileIdByPath(sqlite3* db, int64_t project_id, const std::string& pa
   if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
   sqlite3_finalize(stmt);
   return id;
+}
+
+bool IsFileParsed(sqlite3* db, int64_t project_id, int64_t file_id) {
+  if (!db || file_id <= 0) return false;
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM parsed_file WHERE project_id = ? AND file_id = ? LIMIT 1", -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int64(stmt, 1, project_id);
+  sqlite3_bind_int64(stmt, 2, file_id);
+  bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+  sqlite3_finalize(stmt);
+  return found;
 }
 
 // --- class ---

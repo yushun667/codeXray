@@ -27,20 +27,18 @@ void RunTUPool(const std::vector<TUEntry>& tus,
                TUProcessor processor,
                ProgressCallback on_progress) {
   if (tus.empty()) {
-    if (on_progress) on_progress(0, 0);
+    if (on_progress) on_progress(0, 0, "");
     return;
   }
   if (parallel == 0) parallel = DefaultParallel();
   if (parallel > tus.size()) parallel = static_cast<unsigned>(tus.size());
 
-  if (on_progress) on_progress(0, tus.size());
+  if (on_progress) on_progress(0, tus.size(), "");
 
   std::mutex queue_mutex;
   std::queue<size_t> index_queue;
   for (size_t i = 0; i < tus.size(); ++i) index_queue.push(i);
   std::atomic<size_t> done_count{0};
-  std::condition_variable cv;
-  std::mutex done_mutex;
 
   auto worker = [&]() {
     for (;;) {
@@ -55,7 +53,7 @@ void RunTUPool(const std::vector<TUEntry>& tus,
       if (processor) ok = processor(tus[idx]);
       if (ok) {
         size_t done = ++done_count;
-        if (on_progress) on_progress(done, tus.size());
+        if (on_progress) on_progress(done, tus.size(), tus[idx].source_file);
       }
     }
   };
@@ -66,7 +64,7 @@ void RunTUPool(const std::vector<TUEntry>& tus,
     threads.emplace_back(worker);
   for (auto& t : threads) t.join();
 
-  if (on_progress) on_progress(tus.size(), tus.size());
+  if (on_progress) on_progress(tus.size(), tus.size(), "");
   LogInfo("RunTUPool: completed %zu TUs", tus.size());
 }
 

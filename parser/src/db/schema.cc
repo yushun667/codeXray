@@ -23,6 +23,27 @@ static bool RunStatements(sqlite3* db, const std::string& sql) {
   return true;
 }
 
+/** 当前 schema 版本，递增以触发迁移 */
+static const int kCurrentSchemaVersion = 2;
+
+/** 获取已存储的 schema 版本，无表或无行返回 0 */
+static int GetSchemaVersion(sqlite3* db) {
+  const char* sql = "SELECT version FROM schema_version LIMIT 1";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
+  int ver = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    ver = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return ver;
+}
+
+static void SetSchemaVersion(sqlite3* db, int version) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "UPDATE schema_version SET version = %d", version);
+  RunStatements(db, buf);
+}
+
 /** 为 symbol 表增加声明位置列（迁移：已存在则忽略） */
 static void MigrateSymbolDeclColumns(sqlite3* db) {
   const char* cols[] = {
@@ -42,6 +63,15 @@ static void MigrateSymbolDeclColumns(sqlite3* db) {
   }
   RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_symbol_def_file_line ON symbol(def_file_id, def_line)");
   RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_symbol_decl_file_line ON symbol(decl_file_id, decl_line)");
+}
+
+/** parse_run 增加 files_failed 列（设计 §5.7） */
+static void MigrateParseRunFilesFailed(sqlite3* db) {
+  char* err = nullptr;
+  int r = sqlite3_exec(db, "ALTER TABLE parse_run ADD COLUMN files_failed INTEGER NOT NULL DEFAULT 0", nullptr, nullptr, &err);
+  if (r != SQLITE_OK && err && std::strstr(err, "duplicate") == nullptr)
+    LogError("schema migration parse_run.files_failed: %s", err);
+  if (err) sqlite3_free(err);
 }
 
 bool EnsureSchema(sqlite3* db) {
@@ -198,6 +228,20 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edge_from_to ON cfg_edge(from_node_id, to_nod
 
   if (!RunStatements(db, tables)) return false;
   MigrateSymbolDeclColumns(db);
+
+  /* schema_version 表：单行记录当前版本，启动时执行迁移 */
+  RunStatements(db, "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)");
+  if (GetSchemaVersion(db) == 0) {
+    RunStatements(db, "INSERT INTO schema_version(version) VALUES(1)");
+  }
+  int ver = GetSchemaVersion(db);
+  if (ver < 2) {
+    MigrateParseRunFilesFailed(db);
+    SetSchemaVersion(db, 2);
+    LogInfo("EnsureSchema: migrated to version 2 (parse_run.files_failed)");
+  }
+  if (ver < kCurrentSchemaVersion)
+    LogInfo("EnsureSchema: current schema version %d", kCurrentSchemaVersion);
   LogInfo("EnsureSchema: done");
   return true;
 }

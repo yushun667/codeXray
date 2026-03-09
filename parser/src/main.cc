@@ -5,6 +5,7 @@
 
 #include "cli/parse_args.h"
 #include "common/error_code.h"
+#include "common/logger.h"
 #include "common/path_util.h"
 #include "db/connection.h"
 #include "db/reader/reader.h"
@@ -33,7 +34,8 @@ void PrintUsage(const char* prog) {
       << "  --parallel N                  Parallelism (default: max(1, cores-2))\n"
       << "  --lazy                        Lazy parse (priority dirs first)\n"
       << "  --priority-dirs <path1,...>   Priority dirs when --lazy\n"
-      << "  --incremental                 Incremental update (changed files only)\n\n"
+      << "  --incremental                 Incremental update (changed files only)\n"
+      << "  --verbose                     Verbose logs to stderr\n\n"
       << "Query options:\n"
       << "  --db <path>   Database path\n"
       << "  --type <call_graph|class_graph|data_flow|control_flow|symbol_at>\n"
@@ -74,19 +76,45 @@ int main(int argc, char* argv[]) {
     return static_cast<int>(codexray::ExitCode::kArgError);
   }
 
+  /* --verbose：详细日志输出到 stderr（接口约定 §3.1） */
+  if (sub == codexray::Subcommand::kParse && parse_opts.verbose)
+    codexray::LogInit("", true);
+  else if (sub == codexray::Subcommand::kQuery && query_opts.verbose)
+    codexray::LogInit("", true);
+  else if (sub == codexray::Subcommand::kListRuns && list_opts.verbose)
+    codexray::LogInit("", true);
+  else
+    codexray::LogInit("", false);
+
   if (sub == codexray::Subcommand::kParse) {
-    parse_opts.progress_stdout = [](size_t done, size_t total) {
+    parse_opts.progress_stdout = [](size_t done, size_t total, const std::string& current_file) {
       size_t pct = total ? (done * 100 / total) : 0;
-      std::cout << "{\"percent\":" << pct << ",\"total\":" << total << "}\n" << std::flush;
+      std::string escaped;
+      for (char c : current_file) {
+        if (c == '\\') escaped += "\\\\";
+        else if (c == '"') escaped += "\\\"";
+        else if (c == '\n') escaped += "\\n";
+        else if (c == '\r') escaped += "\\r";
+        else escaped += c;
+      }
+      std::cout << "{\"progress\":" << pct << ",\"current_file\":\"" << escaped << "\"}\n" << std::flush;
     };
-    int parse_result = codexray::RunParse(parse_opts);
+    codexray::ParseSummary summary;
+    int parse_result = codexray::RunParse(parse_opts, &summary);
     if (parse_result != 0) {
       if (parse_result == static_cast<int>(codexray::ExitCode::kCompileCommands))
         std::cerr << "No TU from compile_commands.json (missing or empty).\n";
+      else if (parse_result == static_cast<int>(codexray::ExitCode::kDbWriteFailed))
+        std::cerr << "Database write failed.\n";
       else
         std::cerr << "Parse failed.\n";
       return parse_result;
     }
+    /* 解析摘要 JSON（接口约定 §3） */
+    std::cout << "{\"status\":\"ok\",\"run_id\":" << summary.run_id
+              << ",\"mode\":\"" << summary.mode << "\",\"files_parsed\":" << summary.files_parsed
+              << ",\"files_failed\":" << summary.files_failed
+              << ",\"symbols\":" << summary.symbols_count << "}\n" << std::flush;
     return 0;
   }
 
@@ -99,6 +127,27 @@ int main(int argc, char* argv[]) {
     if (!codexray::EnsureSchema(conn.Get())) {
       std::cerr << "Schema failed.\n";
       return static_cast<int>(codexray::ExitCode::kQueryFailed);
+    }
+    /* 懒解析：若目标文件尚未解析则先按需解析（设计 §4.3） */
+    if (query_opts.lazy && !query_opts.project_root.empty() && !query_opts.file_path.empty()) {
+      std::string path_to_parse = query_opts.file_path;
+      if (!path_to_parse.empty() && path_to_parse[0] != '/' && path_to_parse[0] != '\\')
+        path_to_parse = codexray::NormalizePath(query_opts.project_root + "/" + path_to_parse);
+      else
+        path_to_parse = codexray::NormalizePath(path_to_parse);
+      int64_t project_id = codexray::GetProjectId(conn.Get(), codexray::NormalizePath(query_opts.project_root));
+      int64_t file_id = codexray::QueryFileIdByPath(conn.Get(), project_id, path_to_parse);
+      if (file_id == 0 || !codexray::IsFileParsed(conn.Get(), project_id, file_id)) {
+        std::string cc_path = query_opts.project_root + "/compile_commands.json";
+        unsigned par = query_opts.parallel > 0 ? query_opts.parallel : 1;
+        int pr = codexray::ParseOnDemandForQuery(query_opts.project_root, query_opts.db_path,
+                                                 cc_path, std::vector<std::string>{path_to_parse},
+                                                 par, query_opts.priority_dirs);
+        if (pr != 0) {
+          std::cerr << "On-demand parse failed.\n";
+          return static_cast<int>(codexray::ExitCode::kQueryFailed);
+        }
+      }
     }
     if (query_opts.symbol.empty() && !query_opts.file_path.empty() && query_opts.line > 0) {
       int64_t project_id = 0;

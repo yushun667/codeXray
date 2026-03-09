@@ -14,7 +14,8 @@ namespace codexray {
 
 struct TUEntry;
 
-using ProgressCallback = std::function<void(size_t done, size_t total)>;
+/** 进度回调：done 已完成数，total 总数，current_file 刚完成的 TU 源文件路径（可为空） */
+using ProgressCallback = std::function<void(size_t done, size_t total, const std::string& current_file)>;
 /** 处理单个 TU，返回是否成功；由 driver 注入（如运行 Clang FrontendAction） */
 using TUProcessor = std::function<bool(const TUEntry&)>;
 

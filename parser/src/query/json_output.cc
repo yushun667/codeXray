@@ -303,7 +303,9 @@ std::string QueryDataFlowJson(sqlite3* db, const std::string& symbol,
     EscapeJson(g.name, out);
     out << ",\"kind\":\"global_var\",\"definition\":{\"file\":";
     EscapeJson(g.def_file_path, out);
-    out << ",\"line\":" << g.def_line << ",\"column\":" << g.def_column << "}}";
+    out << ",\"line\":" << g.def_line << ",\"column\":" << g.def_column << "}";
+    out << ",\"definition_range\":{\"start_line\":" << g.def_line << ",\"start_column\":" << g.def_column;
+    out << ",\"end_line\":" << g.def_line_end << ",\"end_column\":" << g.def_column_end << "}}";
   }
   for (const std::string& key : node_usrs) {
     if (key.substr(0, 4) != "sym:") continue;

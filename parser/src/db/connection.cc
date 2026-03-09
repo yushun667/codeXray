@@ -40,6 +40,8 @@ bool Connection::Open(const std::string& path) {
     }
     return false;
   }
+  /* 外键约束：增量删除时依赖级联，与设计 §3.5 一致 */
+  Execute("PRAGMA foreign_keys=ON");
   /* WAL 模式：适合批量写入与并发读，一次事务写入上万条记录时减少 fsync 与锁竞争 */
   Execute("PRAGMA journal_mode=WAL");
   Execute("PRAGMA synchronous=NORMAL");

@@ -15,18 +15,23 @@ namespace codexray {
 struct QueryOptions {
   std::string db_path;
   std::string project_root;
-  std::string query_type;   // call_graph | class_graph | data_flow | control_flow
+  std::string query_type;   // call_graph | class_graph | data_flow | control_flow | symbol_at
   std::string symbol;
   std::string file_path;    // 与 line 同时给出时按「文件+行号」解析符号
   int line = 0;
   int column = 0;
   int depth = 3;
+  bool verbose = false;
+  bool lazy = false;
+  unsigned parallel = 0;
+  std::vector<std::string> priority_dirs;
 };
 
 struct ListRunsOptions {
   std::string db_path;
   std::string project_root;
   int limit = 100;
+  bool verbose = false;
 };
 
 enum class Subcommand { kNone, kParse, kQuery, kListRuns };

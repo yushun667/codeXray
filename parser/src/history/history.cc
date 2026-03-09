@@ -71,17 +71,19 @@ int64_t InsertParseRun(sqlite3* db, int64_t project_id, const std::string& mode)
 bool UpdateParseRun(sqlite3* db, int64_t run_id,
                    const std::string& finished_at,
                    int files_parsed,
+                   int files_failed,
                    const std::string& status,
                    const std::string& error_message) {
   if (!db) return false;
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "UPDATE parse_run SET finished_at=?, files_parsed=?, status=?, error_message=? WHERE id=?", -1, &stmt, nullptr) != SQLITE_OK)
+  if (sqlite3_prepare_v2(db, "UPDATE parse_run SET finished_at=?, files_parsed=?, files_failed=?, status=?, error_message=? WHERE id=?", -1, &stmt, nullptr) != SQLITE_OK)
     return false;
   sqlite3_bind_text(stmt, 1, finished_at.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_int(stmt, 2, files_parsed);
-  sqlite3_bind_text(stmt, 3, status.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 4, error_message.empty() ? nullptr : error_message.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int64(stmt, 5, run_id);
+  sqlite3_bind_int(stmt, 3, files_failed);
+  sqlite3_bind_text(stmt, 4, status.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 5, error_message.empty() ? nullptr : error_message.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, 6, run_id);
   bool ok = sqlite3_step(stmt) == SQLITE_DONE;
   sqlite3_finalize(stmt);
   return ok;
@@ -92,8 +94,8 @@ std::string ListRunsJson(sqlite3* db, int64_t project_id, int limit) {
   if (limit <= 0) limit = 100;
   sqlite3_stmt* stmt = nullptr;
   const char* sql = (project_id > 0)
-      ? "SELECT id,started_at,finished_at,mode,files_parsed,status FROM parse_run WHERE project_id = ? ORDER BY started_at DESC LIMIT ?"
-      : "SELECT id,started_at,finished_at,mode,files_parsed,status FROM parse_run ORDER BY started_at DESC LIMIT ?";
+      ? "SELECT id,started_at,finished_at,mode,files_parsed,files_failed,status FROM parse_run WHERE project_id = ? ORDER BY started_at DESC LIMIT ?"
+      : "SELECT id,started_at,finished_at,mode,files_parsed,files_failed,status FROM parse_run ORDER BY started_at DESC LIMIT ?";
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return "[]";
   if (project_id > 0) {
@@ -113,14 +115,16 @@ std::string ListRunsJson(sqlite3* db, int64_t project_id, int limit) {
     std::string finished = ColText(stmt, 2);
     std::string mode = ColText(stmt, 3);
     int files_parsed = sqlite3_column_int(stmt, 4);
-    std::string status = ColText(stmt, 5);
+    int files_failed = (sqlite3_column_count(stmt) > 5) ? sqlite3_column_int(stmt, 5) : 0;
+    int status_col = (sqlite3_column_count(stmt) > 6) ? 6 : 5;
+    std::string status = ColText(stmt, status_col);
     out << "{\"run_id\":" << id << ",\"started_at\":";
     EscapeJson(started, out);
     out << ",\"finished_at\":";
     EscapeJson(finished, out);
     out << ",\"mode\":";
     EscapeJson(mode, out);
-    out << ",\"files_parsed\":" << files_parsed << ",\"status\":";
+    out << ",\"files_parsed\":" << files_parsed << ",\"files_failed\":" << files_failed << ",\"status\":";
     EscapeJson(status, out);
     out << "}";
   }

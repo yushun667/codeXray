@@ -16,10 +16,11 @@ namespace codexray {
 /** 插入一条 parse_run（status=running），返回 run_id */
 int64_t InsertParseRun(sqlite3* db, int64_t project_id, const std::string& mode);
 
-/** 更新 parse_run：finished_at, files_parsed, status[, error_message] */
+/** 更新 parse_run：finished_at, files_parsed, files_failed, status[, error_message] */
 bool UpdateParseRun(sqlite3* db, int64_t run_id,
                    const std::string& finished_at,
                    int files_parsed,
+                   int files_failed,
                    const std::string& status,
                    const std::string& error_message = "");
 

@@ -63,6 +63,11 @@ Subcommand ParseArgs(int argc, char* argv[],
         i++;
         continue;
       }
+      if (i < argc && std::strcmp(argv[i], "--verbose") == 0) {
+        parse_opts->verbose = true;
+        i++;
+        continue;
+      }
       i++;
     }
     if (parse_opts->project_root.empty() && error_msg) *error_msg = "missing --project";
@@ -91,10 +96,34 @@ Subcommand ParseArgs(int argc, char* argv[],
         if (query_opts->depth <= 0) query_opts->depth = 3;
         continue;
       }
+      if (i < argc && std::strcmp(argv[i], "--lazy") == 0) {
+        query_opts->lazy = true;
+        i++;
+        continue;
+      }
+      if (ConsumeArg(&i, argc, argv, "--parallel", &s)) {
+        query_opts->parallel = static_cast<unsigned>(std::atoi(s.c_str()));
+        continue;
+      }
+      if (ConsumeArg(&i, argc, argv, "--priority-dirs", &s)) {
+        SplitComma(s, &query_opts->priority_dirs);
+        continue;
+      }
+      if (i < argc && std::strcmp(argv[i], "--verbose") == 0) {
+        query_opts->verbose = true;
+        i++;
+        continue;
+      }
       i++;
     }
-    if (query_opts->db_path.empty() || query_opts->query_type.empty()) {
-      if (error_msg) *error_msg = "query requires --db and --type";
+    if (query_opts->db_path.empty()) {
+      if (error_msg) *error_msg = "query requires --db";
+      return Subcommand::kNone;
+    }
+    if (query_opts->query_type.empty() && !query_opts->file_path.empty() && query_opts->line > 0)
+      query_opts->query_type = "symbol_at";
+    if (query_opts->query_type.empty()) {
+      if (error_msg) *error_msg = "query requires --type or --file with --line (symbol_at)";
       return Subcommand::kNone;
     }
     return Subcommand::kQuery;
@@ -109,6 +138,11 @@ Subcommand ParseArgs(int argc, char* argv[],
       if (ConsumeArg(&i, argc, argv, "--limit", &s)) {
         list_opts->limit = std::atoi(s.c_str());
         if (list_opts->limit <= 0) list_opts->limit = 100;
+        continue;
+      }
+      if (i < argc && std::strcmp(argv[i], "--verbose") == 0) {
+        list_opts->verbose = true;
+        i++;
         continue;
       }
       i++;

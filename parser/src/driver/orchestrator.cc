@@ -15,6 +15,7 @@
 #include "incremental/incremental.h"
 #include "scheduler/pool.h"
 #include <sqlite3.h>
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -23,6 +24,10 @@
 #include <iomanip>
 
 namespace codexray {
+
+namespace {
+std::atomic<bool> g_on_demand_parsing{false};
+}  // namespace
 
 namespace {
 
@@ -42,7 +47,7 @@ std::string NowUtc() {
 
 }  // namespace
 
-int RunParse(const ParseOptions& opts) {
+int RunParse(const ParseOptions& opts, ParseSummary* summary_out) {
   if (opts.project_root.empty()) {
     LogError("RunParse: project_root empty");
     return static_cast<int>(ExitCode::kArgError);
@@ -204,8 +209,8 @@ int RunParse(const ParseOptions& opts) {
   };
 
   const size_t total_steps = tus_to_run.size() + 1;  // +1 for DB write phase
-  ProgressCallback on_progress = [&](size_t done, size_t total) {
-    if (opts.progress_stdout) opts.progress_stdout(done, total_steps);
+  ProgressCallback on_progress = [&](size_t done, size_t total, const std::string& current_file) {
+    if (opts.progress_stdout) opts.progress_stdout(done, total_steps, current_file);
   };
 
   RunTUPool(tus_to_run, parallel, processor, on_progress);
@@ -245,15 +250,211 @@ int RunParse(const ParseOptions& opts) {
     return static_cast<int>(ExitCode::kDbWriteFailed);
   }
 
+  int files_parsed = static_cast<int>(file_id_by_path.size());
+  int files_failed = static_cast<int>(tus_to_run.size()) - files_parsed;
   std::string finished = NowUtc();
   if (!UpdateParseRun(conn.Get(), run_id, finished,
-                     static_cast<int>(tus_to_run.size()), "completed", "")) {
+                     files_parsed, files_failed, "completed", "")) {
     LogError("RunParse: UpdateParseRun failed");
     return static_cast<int>(ExitCode::kDbWriteFailed);
   }
-  if (opts.progress_stdout) opts.progress_stdout(total_steps, total_steps);
+  if (opts.progress_stdout) opts.progress_stdout(total_steps, total_steps, "");
+  if (summary_out) {
+    summary_out->run_id = run_id;
+    summary_out->files_parsed = files_parsed;
+    summary_out->files_failed = files_failed;
+    summary_out->symbols_count = all_symbols.size();
+    summary_out->mode = mode;
+  }
   LogInfo("RunParse: done run_id=%ld files=%zu", (long)run_id, tus_to_run.size());
   return static_cast<int>(ExitCode::kSuccess);
+}
+
+int ParseOnDemandForQuery(const std::string& project_root,
+                          const std::string& db_path,
+                          const std::string& compile_commands_path,
+                          const std::vector<std::string>& file_paths,
+                          unsigned parallel,
+                          const std::vector<std::string>& /* priority_dirs */) {
+  if (g_on_demand_parsing.exchange(true)) {
+    LogError("ParseOnDemandForQuery: re-entry refused");
+    return -1;
+  }
+  int r = 0;
+  std::string proot = NormalizePath(project_root);
+  std::string cc_path = compile_commands_path.empty()
+      ? (proot + "/compile_commands.json")
+      : compile_commands_path;
+
+  Connection conn;
+  if (!conn.Open(db_path)) {
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  if (!EnsureSchema(conn.Get())) {
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  DBWriter writer(conn.Get());
+  int64_t project_id = writer.EnsureProject(proot, cc_path);
+  if (project_id <= 0) {
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+
+  std::vector<TUEntry> all_tus = LoadCompileCommands(proot, cc_path);
+  if (all_tus.empty()) {
+    g_on_demand_parsing = false;
+    return 0;
+  }
+  std::set<std::string> path_set;
+  for (const std::string& p : file_paths) path_set.insert(NormalizePath(p));
+  std::vector<TUEntry> tus_to_run;
+  for (const TUEntry& tu : all_tus) {
+    std::string src = NormalizePath(tu.source_file);
+    if (path_set.count(src) || path_set.count(tu.source_file))
+      tus_to_run.push_back(tu);
+  }
+  if (tus_to_run.empty()) {
+    g_on_demand_parsing = false;
+    return 0;
+  }
+
+  RemoveDataForFiles(conn.Get(), project_id, std::vector<std::string>(file_paths.begin(), file_paths.end()));
+
+  int64_t run_id = InsertParseRun(conn.Get(), project_id, "full");
+  if (run_id <= 0) {
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+
+  unsigned par = parallel;
+  if (par == 0) par = 1;
+  std::mutex collect_mutex;
+  std::mutex db_mutex;
+  std::unordered_map<std::string, int64_t> file_id_by_path;
+  std::unordered_map<std::string, SymbolRecord> symbol_by_usr;
+  std::vector<CallEdgeRecord> all_edges;
+  std::vector<ClassRecord> all_classes;
+  std::vector<ClassRelationRecord> all_relations;
+  std::vector<GlobalVarRecord> all_global_vars;
+  std::vector<DataFlowEdgeRecord> all_data_flow_edges;
+  std::vector<CfgNodeRecord> all_cfg_nodes;
+  std::vector<CfgEdgeRecord> all_cfg_edges;
+
+  TUProcessor processor = [&](const TUEntry& tu) {
+    int64_t file_id;
+    {
+      std::lock_guard<std::mutex> lock(db_mutex);
+      file_id = writer.EnsureFile(project_id, tu.source_file);
+    }
+    if (file_id <= 0) return false;
+    CallGraphOutput cg_out;
+    ClassRelationOutput cr_out;
+    DataFlowOutput df_out;
+    ControlFlowOutput cf_out;
+    if (!RunAllAnalysesOnTU(tu, &cg_out, &cr_out, &df_out, &cf_out)) return false;
+    for (auto& s : cg_out.symbols) {
+      s.def_file_id = s.def_in_tu_file ? file_id : 0;
+      s.decl_file_id = s.decl_in_tu_file ? file_id : 0;
+    }
+    for (auto& e : cg_out.edges) e.call_site_file_id = file_id;
+    for (auto& c : cr_out.classes) { c.file_id = file_id; c.def_file_id = file_id; }
+    for (auto& g : df_out.global_vars) { g.def_file_id = file_id; g.file_id = file_id; }
+    for (auto& n : cf_out.nodes) n.file_id = file_id;
+    std::lock_guard<std::mutex> lock(collect_mutex);
+    file_id_by_path[tu.source_file] = file_id;
+    for (auto& s : cg_out.symbols) {
+      auto it = symbol_by_usr.find(s.usr);
+      if (it == symbol_by_usr.end()) {
+        symbol_by_usr[s.usr] = std::move(s);
+      } else {
+        SymbolRecord& e = it->second;
+        if (s.def_file_id && !e.def_file_id) {
+          e.def_file_id = s.def_file_id;
+          e.def_line = s.def_line;
+          e.def_column = s.def_column;
+          e.def_line_end = s.def_line_end;
+          e.def_column_end = s.def_column_end;
+        }
+        if (s.decl_file_id && !e.decl_file_id) {
+          e.decl_file_id = s.decl_file_id;
+          e.decl_line = s.decl_line;
+          e.decl_column = s.decl_column;
+          e.decl_line_end = s.decl_line_end;
+          e.decl_column_end = s.decl_column_end;
+        }
+        if (e.kind == "function" && (s.kind == "method" || s.kind == "constructor" || s.kind == "destructor"))
+          e.kind = s.kind;
+      }
+    }
+    for (auto& e : cg_out.edges) all_edges.push_back(e);
+    for (auto& c : cr_out.classes) all_classes.push_back(c);
+    for (auto& r : cr_out.relations) all_relations.push_back(r);
+    for (auto& g : df_out.global_vars) all_global_vars.push_back(g);
+    for (auto& e : df_out.edges) all_data_flow_edges.push_back(e);
+    size_t cfg_base = all_cfg_nodes.size();
+    for (auto& n : cf_out.nodes) all_cfg_nodes.push_back(n);
+    for (auto& e : cf_out.edges) {
+      CfgEdgeRecord e2 = e;
+      e2.from_node_index += static_cast<int>(cfg_base);
+      e2.to_node_index += static_cast<int>(cfg_base);
+      all_cfg_edges.push_back(e2);
+    }
+    return true;
+  };
+
+  RunTUPool(tus_to_run, par, processor, nullptr);
+
+  std::vector<SymbolRecord> all_symbols;
+  all_symbols.reserve(symbol_by_usr.size());
+  for (auto& kv : symbol_by_usr) all_symbols.push_back(std::move(kv.second));
+
+  if (!conn.BeginTransaction()) {
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  auto usr_to_id = writer.WriteSymbols(project_id, all_symbols);
+  if (!writer.WriteCallEdges(project_id, all_edges, usr_to_id)) {
+    conn.Rollback();
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  auto class_usr_to_id = writer.WriteClasses(project_id, all_classes);
+  if (!writer.WriteClassRelations(project_id, all_relations, class_usr_to_id)) {
+    conn.Rollback();
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  auto var_usr_to_id = writer.WriteGlobalVars(project_id, all_global_vars);
+  if (!writer.WriteDataFlowEdges(project_id, all_data_flow_edges, var_usr_to_id, usr_to_id)) {
+    conn.Rollback();
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  std::vector<int64_t> cfg_node_ids = writer.WriteCfgNodes(project_id, all_cfg_nodes, usr_to_id);
+  if (!writer.WriteCfgEdges(project_id, all_cfg_edges, cfg_node_ids)) {
+    conn.Rollback();
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  for (const TUEntry& tu : tus_to_run) {
+    auto it = file_id_by_path.find(tu.source_file);
+    if (it != file_id_by_path.end() && it->second > 0)
+      writer.UpdateParsedFile(project_id, it->second, run_id, 0, "");
+  }
+  if (!conn.Commit()) {
+    conn.Rollback();
+    g_on_demand_parsing = false;
+    return static_cast<int>(ExitCode::kDbWriteFailed);
+  }
+  int files_parsed = static_cast<int>(file_id_by_path.size());
+  int files_failed = static_cast<int>(tus_to_run.size()) - files_parsed;
+  std::string finished = NowUtc();
+  UpdateParseRun(conn.Get(), run_id, finished, files_parsed, files_failed, "completed", "");
+  g_on_demand_parsing = false;
+  LogInfo("ParseOnDemandForQuery: done %d files", files_parsed);
+  return 0;
 }
 
 }  // namespace codexray

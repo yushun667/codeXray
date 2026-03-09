@@ -78,6 +78,8 @@ std::string QueryFilePath(sqlite3* db, int64_t file_id);
 int64_t QueryProjectIdByRoot(sqlite3* db, const std::string& root_path);
 /** 按 project_id 与 path 查 file_id；path 可为绝对或与 file 表一致；不存在返回 0 */
 int64_t QueryFileIdByPath(sqlite3* db, int64_t project_id, const std::string& path);
+/** 是否已解析：parsed_file 表中存在 (project_id, file_id) 记录 */
+bool IsFileParsed(sqlite3* db, int64_t project_id, int64_t file_id);
 
 // --- class / class_relation ---
 struct ClassRow {
