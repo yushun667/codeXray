@@ -49,6 +49,10 @@ Subcommand ParseArgs(int argc, char* argv[],
         parse_opts->parallel = static_cast<unsigned>(std::atoi(parallel_str.c_str()));
         continue;
       }
+      if (ConsumeArg(&i, argc, argv, "--jobs", &parallel_str)) {
+        parse_opts->parallel = static_cast<unsigned>(std::atoi(parallel_str.c_str()));
+        continue;
+      }
       if (ConsumeArg(&i, argc, argv, "--priority-dirs", &parallel_str)) {
         SplitComma(parallel_str, &parse_opts->priority_dirs);
         continue;
@@ -102,6 +106,10 @@ Subcommand ParseArgs(int argc, char* argv[],
         continue;
       }
       if (ConsumeArg(&i, argc, argv, "--parallel", &s)) {
+        query_opts->parallel = static_cast<unsigned>(std::atoi(s.c_str()));
+        continue;
+      }
+      if (ConsumeArg(&i, argc, argv, "--jobs", &s)) {
         query_opts->parallel = static_cast<unsigned>(std::atoi(s.c_str()));
         continue;
       }

@@ -31,7 +31,7 @@ void PrintUsage(const char* prog) {
       << "  --project <path>              Project root (required)\n"
       << "  --compile-commands <path>    Default: <project>/compile_commands.json\n"
       << "  --output-db <path>            Output SQLite DB path\n"
-      << "  --parallel N                  Parallelism (default: max(1, cores-2))\n"
+      << "  --parallel N  (or --jobs N)   Parallelism (default: max(1, cores-2))\n"
       << "  --lazy                        Lazy parse (priority dirs first)\n"
       << "  --priority-dirs <path1,...>   Priority dirs when --lazy\n"
       << "  --incremental                 Incremental update (changed files only)\n"

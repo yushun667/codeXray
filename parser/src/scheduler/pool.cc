@@ -15,9 +15,11 @@ namespace codexray {
 
 namespace {
 
+/** 默认并行度：max(1, 系统核心数 - 2)，与接口约定、模块功能说明一致 */
 unsigned DefaultParallel() {
   unsigned n = static_cast<unsigned>(std::thread::hardware_concurrency());
-  return n > 0 ? n -2 : 1;
+  if (n <= 2u) return 1u;
+  return n - 2u;
 }
 
 }  // namespace
