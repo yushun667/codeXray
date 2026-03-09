@@ -82,15 +82,33 @@ export function GraphPage() {
         setReady(true);
       }
       if (m.action === 'graphAppend' && (m.nodes?.length || m.edges?.length)) {
-        const appendNodes = (m.nodes ?? []) as Node<FlowNodeData>[];
-        const appendEdges = (m.edges ?? []) as Edge[];
+        const appendData: GraphData = { nodes: m.nodes ?? [], edges: m.edges ?? [] };
+        let appendFlowNodes: Node<FlowNodeData>[];
+        let appendFlowEdges: Edge[];
+        switch (graphType) {
+          case 'call_graph':
+            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptCallGraph(appendData));
+            break;
+          case 'class_graph':
+            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptClassGraph(appendData));
+            break;
+          case 'data_flow':
+            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptDataFlow(appendData));
+            break;
+          case 'control_flow':
+            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptControlFlow(appendData));
+            break;
+          default:
+            appendFlowNodes = [];
+            appendFlowEdges = [];
+        }
         setNodes((cur) => {
           setEdges((curE) => {
             const { nodes: mergedN, edges: mergedE } = mergeGraph(
               cur,
               curE,
-              appendNodes,
-              appendEdges
+              appendFlowNodes,
+              appendFlowEdges
             );
             const laid = getLayoutedElements(mergedN, mergedE, graphType);
             queueMicrotask(() => {

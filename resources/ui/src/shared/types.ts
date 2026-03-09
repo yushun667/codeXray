@@ -19,6 +19,8 @@ export interface GraphNode {
   id: string;
   usr?: string;
   name: string;
+  /** 带作用域前缀的符号名，如 Namespace::Class::function */
+  qualified_name?: string;
   definition?: DefinitionLocation;
   definition_range?: DefinitionRange;
   file?: string;

@@ -13,9 +13,9 @@ export interface FlowNodeData {
   name?: string;
 }
 
-/** 节点显示名：函数名 + 文件名 + 行号，不使用 USR（供各 adapter 复用） */
+/** 节点显示名：作用域前缀(qualified_name) + 文件名 + 行号，不使用 USR（供各 adapter 复用） */
 export function nodeLabel(n: ApiNode): string {
-  const name = n.name ?? '?';
+  const name = (n as { qualified_name?: string }).qualified_name ?? n.name ?? '?';
   const def = n.definition;
   if (def?.file != null && def?.line != null) {
     const base = def.file.replace(/^.*[/\\]/, '');

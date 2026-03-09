@@ -33,6 +33,8 @@ std::string CallGraphNodeJson(const SymbolRow& s) {
   EscapeJson(s.usr, o);
   o << ",\"name\":";
   EscapeJson(s.name, o);
+  o << ",\"qualified_name\":";
+  EscapeJson(s.qualified_name.empty() ? s.name : s.qualified_name, o);
   o << ",\"kind\":";
   EscapeJson(s.kind.empty() ? "function" : s.kind, o);
   o << ",\"definition\":{\"file\":";
@@ -156,6 +158,8 @@ std::string ClassNodeJson(const ClassRow& c) {
   EscapeJson(c.usr, o);
   o << ",\"name\":";
   EscapeJson(c.name, o);
+  o << ",\"qualified_name\":";
+  EscapeJson(c.qualified_name.empty() ? c.name : c.qualified_name, o);
   o << ",\"definition\":{\"file\":";
   EscapeJson(c.def_file_path.empty() ? std::to_string(c.def_file_id) : c.def_file_path, o);
   o << ",\"line\":" << c.def_line << ",\"column\":" << c.def_column << "}";
