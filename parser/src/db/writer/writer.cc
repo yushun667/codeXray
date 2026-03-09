@@ -7,10 +7,14 @@
 #include <sqlite3.h>
 #include <cstring>
 #include <sstream>
+#include <tuple>
 
 namespace codexray {
 
 namespace {
+
+/** SQLite 单语句最大绑定参数默认 999，取 100 行/批可兼容 9 列表（class/data_flow_edge） */
+constexpr int kBatchSize = 100;
 
 int64_t LastInsertId(sqlite3* db) {
   return static_cast<int64_t>(sqlite3_last_insert_rowid(db));
@@ -167,10 +171,10 @@ bool DBWriter::WriteCallEdges(int64_t project_id,
                               const std::unordered_map<std::string, int64_t>& usr_to_id) {
   if (!db_ || edges.empty()) return true;
   std::unordered_map<std::string, int64_t> resolved(usr_to_id);
-  const char* sql = "INSERT INTO call_edge(caller_id,callee_id,call_site_file_id,call_site_line,call_site_column,edge_type)"
-                    " VALUES(?,?,?,?,?,?)";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  /* 先解析所有边为 (caller_id, callee_id, ...)，再批量 INSERT */
+  struct ResolvedEdge { int64_t caller_id, callee_id, file_id; int line, col; std::string type; };
+  std::vector<ResolvedEdge> resolved_edges;
+  resolved_edges.reserve(edges.size());
   for (const auto& e : edges) {
     int64_t caller_id = 0, callee_id = 0;
     auto it = resolved.find(e.caller_usr);
@@ -189,14 +193,37 @@ bool DBWriter::WriteCallEdges(int64_t project_id,
       if (callee_id > 0) resolved[e.callee_usr] = callee_id;
     }
     if (callee_id == 0) continue;
+    resolved_edges.push_back({caller_id, callee_id, e.call_site_file_id, e.call_site_line, e.call_site_column, e.edge_type});
+  }
+  if (resolved_edges.empty()) return true;
+  /* 批量 INSERT：每批 kBatchSize 行，每行 6 列 */
+  std::string sql = "INSERT INTO call_edge(caller_id,callee_id,call_site_file_id,call_site_line,call_site_column,edge_type) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?,?,?,?)" : "(?,?,?,?,?,?)");
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (size_t off = 0; off < resolved_edges.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), resolved_edges.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO call_edge(caller_id,callee_id,call_site_file_id,call_site_line,call_site_column,edge_type) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?,?,?,?)" : "(?,?,?,?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+    }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      const auto& r = resolved_edges[off + i];
+      sqlite3_bind_int64(stmt, idx++, r.caller_id);
+      sqlite3_bind_int64(stmt, idx++, r.callee_id);
+      sqlite3_bind_int64(stmt, idx++, r.file_id);
+      sqlite3_bind_int(stmt, idx++, r.line);
+      sqlite3_bind_int(stmt, idx++, r.col);
+      sqlite3_bind_text(stmt, idx++, r.type.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+      sqlite3_finalize(stmt);
+      return false;
+    }
     sqlite3_reset(stmt);
-    sqlite3_bind_int64(stmt, 1, caller_id);
-    sqlite3_bind_int64(stmt, 2, callee_id);
-    sqlite3_bind_int64(stmt, 3, e.call_site_file_id);
-    sqlite3_bind_int(stmt, 4, e.call_site_line);
-    sqlite3_bind_int(stmt, 5, e.call_site_column);
-    sqlite3_bind_text(stmt, 6, e.edge_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
   }
   sqlite3_finalize(stmt);
   return true;
@@ -207,26 +234,41 @@ std::unordered_map<std::string, int64_t> DBWriter::WriteClasses(
     const std::vector<ClassRecord>& classes) {
   std::unordered_map<std::string, int64_t> usr_to_id;
   if (!db_ || classes.empty()) return usr_to_id;
-  const char* sql = "INSERT INTO class(usr,file_id,name,qualified_name,def_file_id,def_line,def_column,def_line_end,def_column_end)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)";
+  std::string sql = "INSERT INTO class(usr,file_id,name,qualified_name,def_file_id,def_line,def_column,def_line_end,def_column_end) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?)");
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
-  for (const auto& c : classes) {
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+  for (size_t off = 0; off < classes.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), classes.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO class(usr,file_id,name,qualified_name,def_file_id,def_line,def_column,def_line_end,def_column_end) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+    }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      const auto& c = classes[off + i];
+      sqlite3_bind_text(stmt, idx++, c.usr.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(stmt, idx++, c.file_id);
+      sqlite3_bind_text(stmt, idx++, c.name.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, idx++, c.qualified_name.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(stmt, idx++, c.def_file_id);
+      sqlite3_bind_int(stmt, idx++, c.def_line);
+      sqlite3_bind_int(stmt, idx++, c.def_column);
+      sqlite3_bind_int(stmt, idx++, c.def_line_end);
+      sqlite3_bind_int(stmt, idx++, c.def_column_end);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+      sqlite3_finalize(stmt);
+      return usr_to_id;
+    }
+    int64_t last_id = LastInsertId(db_);
+    for (size_t i = n; i > 0; --i) usr_to_id[classes[off + i - 1].usr] = last_id - static_cast<int64_t>(i) + 1;
     sqlite3_reset(stmt);
-    sqlite3_bind_text(stmt, 1, c.usr.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 2, c.file_id);
-    sqlite3_bind_text(stmt, 3, c.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, c.qualified_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 5, c.def_file_id);
-    sqlite3_bind_int(stmt, 6, c.def_line);
-    sqlite3_bind_int(stmt, 7, c.def_column);
-    sqlite3_bind_int(stmt, 8, c.def_line_end);
-    sqlite3_bind_int(stmt, 9, c.def_column_end);
-    if (sqlite3_step(stmt) == SQLITE_DONE)
-      usr_to_id[c.usr] = LastInsertId(db_);
   }
   sqlite3_finalize(stmt);
-  LogInfo("WriteClasses: inserted %zu classes", usr_to_id.size());
+  LogInfo("WriteClasses: inserted %zu classes (batch)", usr_to_id.size());
   return usr_to_id;
 }
 
@@ -234,18 +276,36 @@ bool DBWriter::WriteClassRelations(int64_t project_id,
                                    const std::vector<ClassRelationRecord>& relations,
                                    const std::unordered_map<std::string, int64_t>& class_usr_to_id) {
   if (!db_ || relations.empty()) return true;
-  const char* sql = "INSERT INTO class_relation(parent_id,child_id,relation_type) VALUES(?,?,?)";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  std::vector<std::tuple<int64_t, int64_t, std::string>> rows;
+  rows.reserve(relations.size());
   for (const auto& r : relations) {
     auto pit = class_usr_to_id.find(r.parent_usr);
     auto cit = class_usr_to_id.find(r.child_usr);
-    if (pit == class_usr_to_id.end() || cit == class_usr_to_id.end()) continue;
+    if (pit != class_usr_to_id.end() && cit != class_usr_to_id.end())
+      rows.emplace_back(pit->second, cit->second, r.relation_type);
+  }
+  if (rows.empty()) return true;
+  std::string sql = "INSERT INTO class_relation(parent_id,child_id,relation_type) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?)" : "(?,?,?)");
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (size_t off = 0; off < rows.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), rows.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO class_relation(parent_id,child_id,relation_type) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?)" : "(?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+    }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      const auto& t = rows[off + i];
+      sqlite3_bind_int64(stmt, idx++, std::get<0>(t));
+      sqlite3_bind_int64(stmt, idx++, std::get<1>(t));
+      sqlite3_bind_text(stmt, idx++, std::get<2>(t).c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) { sqlite3_finalize(stmt); return false; }
     sqlite3_reset(stmt);
-    sqlite3_bind_int64(stmt, 1, pit->second);
-    sqlite3_bind_int64(stmt, 2, cit->second);
-    sqlite3_bind_text(stmt, 3, r.relation_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
   }
   sqlite3_finalize(stmt);
   return true;
@@ -256,25 +316,40 @@ std::unordered_map<std::string, int64_t> DBWriter::WriteGlobalVars(
     const std::vector<GlobalVarRecord>& global_vars) {
   std::unordered_map<std::string, int64_t> usr_to_id;
   if (!db_ || global_vars.empty()) return usr_to_id;
-  const char* sql = "INSERT INTO global_var(usr,def_file_id,def_line,def_column,def_line_end,def_column_end,file_id,name)"
-                    " VALUES(?,?,?,?,?,?,?,?)";
+  std::string sql = "INSERT INTO global_var(usr,def_file_id,def_line,def_column,def_line_end,def_column_end,file_id,name) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?)");
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
-  for (const auto& g : global_vars) {
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+  for (size_t off = 0; off < global_vars.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), global_vars.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO global_var(usr,def_file_id,def_line,def_column,def_line_end,def_column_end,file_id,name) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return usr_to_id;
+    }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      const auto& g = global_vars[off + i];
+      sqlite3_bind_text(stmt, idx++, g.usr.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(stmt, idx++, g.def_file_id);
+      sqlite3_bind_int(stmt, idx++, g.def_line);
+      sqlite3_bind_int(stmt, idx++, g.def_column);
+      sqlite3_bind_int(stmt, idx++, g.def_line_end);
+      sqlite3_bind_int(stmt, idx++, g.def_column_end);
+      sqlite3_bind_int64(stmt, idx++, g.file_id);
+      sqlite3_bind_text(stmt, idx++, g.name.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+      sqlite3_finalize(stmt);
+      return usr_to_id;
+    }
+    int64_t last_id = LastInsertId(db_);
+    for (size_t i = n; i > 0; --i) usr_to_id[global_vars[off + i - 1].usr] = last_id - static_cast<int64_t>(i) + 1;
     sqlite3_reset(stmt);
-    sqlite3_bind_text(stmt, 1, g.usr.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 2, g.def_file_id);
-    sqlite3_bind_int(stmt, 3, g.def_line);
-    sqlite3_bind_int(stmt, 4, g.def_column);
-    sqlite3_bind_int(stmt, 5, g.def_line_end);
-    sqlite3_bind_int(stmt, 6, g.def_column_end);
-    sqlite3_bind_int64(stmt, 7, g.file_id);
-    sqlite3_bind_text(stmt, 8, g.name.c_str(), -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt) == SQLITE_DONE)
-      usr_to_id[g.usr] = LastInsertId(db_);
   }
   sqlite3_finalize(stmt);
-  LogInfo("WriteGlobalVars: inserted %zu vars", usr_to_id.size());
+  LogInfo("WriteGlobalVars: inserted %zu vars (batch)", usr_to_id.size());
   return usr_to_id;
 }
 
@@ -283,10 +358,9 @@ bool DBWriter::WriteDataFlowEdges(int64_t project_id,
                                   const std::unordered_map<std::string, int64_t>& var_usr_to_id,
                                   const std::unordered_map<std::string, int64_t>& symbol_usr_to_id) {
   if (!db_ || edges.empty()) return true;
-  const char* sql = "INSERT INTO data_flow_edge(var_id,reader_id,writer_id,read_file_id,read_line,read_column,write_file_id,write_line,write_column)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  struct Row { int64_t var_id, reader_id, writer_id, read_file_id, write_file_id; int rl, rc, wl, wc; };
+  std::vector<Row> rows;
+  rows.reserve(edges.size());
   for (const auto& e : edges) {
     auto vit = var_usr_to_id.find(e.var_usr);
     if (vit == var_usr_to_id.end()) continue;
@@ -300,17 +374,36 @@ bool DBWriter::WriteDataFlowEdges(int64_t project_id,
       if (it != symbol_usr_to_id.end()) writer_id = it->second;
     }
     if (reader_id == 0 && writer_id == 0) continue;
+    rows.push_back({vit->second, reader_id, writer_id, e.read_file_id, e.write_file_id, e.read_line, e.read_column, e.write_line, e.write_column});
+  }
+  if (rows.empty()) return true;
+  std::string sql = "INSERT INTO data_flow_edge(var_id,reader_id,writer_id,read_file_id,read_line,read_column,write_file_id,write_line,write_column) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?)");
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (size_t off = 0; off < rows.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), rows.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO data_flow_edge(var_id,reader_id,writer_id,read_file_id,read_line,read_column,write_file_id,write_line,write_column) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+    }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      const Row& r = rows[off + i];
+      sqlite3_bind_int64(stmt, idx++, r.var_id);
+      if (r.reader_id) sqlite3_bind_int64(stmt, idx++, r.reader_id); else { sqlite3_bind_null(stmt, idx); idx++; }
+      if (r.writer_id) sqlite3_bind_int64(stmt, idx++, r.writer_id); else { sqlite3_bind_null(stmt, idx); idx++; }
+      if (r.read_file_id) sqlite3_bind_int64(stmt, idx++, r.read_file_id); else { sqlite3_bind_null(stmt, idx); idx++; }
+      sqlite3_bind_int(stmt, idx++, r.rl);
+      sqlite3_bind_int(stmt, idx++, r.rc);
+      if (r.write_file_id) sqlite3_bind_int64(stmt, idx++, r.write_file_id); else { sqlite3_bind_null(stmt, idx); idx++; }
+      sqlite3_bind_int(stmt, idx++, r.wl);
+      sqlite3_bind_int(stmt, idx++, r.wc);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) { sqlite3_finalize(stmt); return false; }
     sqlite3_reset(stmt);
-    sqlite3_bind_int64(stmt, 1, vit->second);
-    reader_id ? sqlite3_bind_int64(stmt, 2, reader_id) : sqlite3_bind_null(stmt, 2);
-    writer_id ? sqlite3_bind_int64(stmt, 3, writer_id) : sqlite3_bind_null(stmt, 3);
-    e.read_file_id ? sqlite3_bind_int64(stmt, 4, e.read_file_id) : sqlite3_bind_null(stmt, 4);
-    sqlite3_bind_int(stmt, 5, e.read_line);
-    sqlite3_bind_int(stmt, 6, e.read_column);
-    e.write_file_id ? sqlite3_bind_int64(stmt, 7, e.write_file_id) : sqlite3_bind_null(stmt, 7);
-    sqlite3_bind_int(stmt, 8, e.write_line);
-    sqlite3_bind_int(stmt, 9, e.write_column);
-    sqlite3_step(stmt);
   }
   sqlite3_finalize(stmt);
   return true;
@@ -319,32 +412,48 @@ bool DBWriter::WriteDataFlowEdges(int64_t project_id,
 std::vector<int64_t> DBWriter::WriteCfgNodes(int64_t project_id,
                                             const std::vector<CfgNodeRecord>& nodes,
                                             const std::unordered_map<std::string, int64_t>& symbol_usr_to_id) {
-  std::vector<int64_t> node_ids;
+  std::vector<int64_t> node_ids(nodes.size(), 0);
   if (!db_ || nodes.empty()) return node_ids;
-  node_ids.reserve(nodes.size());
-  const char* sql = "INSERT INTO cfg_node(symbol_id,block_id,kind,file_id,line,column) VALUES(?,?,?,?,?,?)";
+  /* 能解析到 symbol_id 的节点批量插入，回填 node_ids 与 nodes 同序 */
+  std::vector<std::pair<size_t, int64_t>> symbol_id_and_index;
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    auto it = symbol_usr_to_id.find(nodes[i].symbol_usr);
+    if (it != symbol_usr_to_id.end())
+      symbol_id_and_index.push_back({i, it->second});
+  }
+  if (symbol_id_and_index.empty()) return node_ids;
+  std::string sql = "INSERT INTO cfg_node(symbol_id,block_id,kind,file_id,line,column) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?,?,?,?)" : "(?,?,?,?,?,?)");
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return node_ids;
-  for (const auto& n : nodes) {
-    auto it = symbol_usr_to_id.find(n.symbol_usr);
-    if (it == symbol_usr_to_id.end()) {
-      node_ids.push_back(0);
-      continue;
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return node_ids;
+  for (size_t off = 0; off < symbol_id_and_index.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), symbol_id_and_index.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO cfg_node(symbol_id,block_id,kind,file_id,line,column) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?,?,?,?)" : "(?,?,?,?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) break;
     }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      size_t node_idx = symbol_id_and_index[off + i].first;
+      int64_t sym_id = symbol_id_and_index[off + i].second;
+      const auto& no = nodes[node_idx];
+      sqlite3_bind_int64(stmt, idx++, sym_id);
+      sqlite3_bind_text(stmt, idx++, no.block_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, idx++, no.kind.c_str(), -1, SQLITE_TRANSIENT);
+      no.file_id ? sqlite3_bind_int64(stmt, idx++, no.file_id) : sqlite3_bind_null(stmt, idx++);
+      sqlite3_bind_int(stmt, idx++, no.line);
+      sqlite3_bind_int(stmt, idx++, no.column);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) break;
+    int64_t last_id = LastInsertId(db_);
+    for (size_t i = n; i > 0; --i)
+      node_ids[symbol_id_and_index[off + i - 1].first] = last_id - static_cast<int64_t>(i) + 1;
     sqlite3_reset(stmt);
-    sqlite3_bind_int64(stmt, 1, it->second);
-    sqlite3_bind_text(stmt, 2, n.block_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, n.kind.c_str(), -1, SQLITE_TRANSIENT);
-    n.file_id ? sqlite3_bind_int64(stmt, 4, n.file_id) : sqlite3_bind_null(stmt, 4);
-    sqlite3_bind_int(stmt, 5, n.line);
-    sqlite3_bind_int(stmt, 6, n.column);
-    if (sqlite3_step(stmt) == SQLITE_DONE)
-      node_ids.push_back(LastInsertId(db_));
-    else
-      node_ids.push_back(0);
   }
   sqlite3_finalize(stmt);
-  LogInfo("WriteCfgNodes: inserted %zu nodes", node_ids.size());
+  LogInfo("WriteCfgNodes: inserted %zu nodes (batch)", symbol_id_and_index.size());
   return node_ids;
 }
 
@@ -352,21 +461,39 @@ bool DBWriter::WriteCfgEdges(int64_t project_id,
                              const std::vector<CfgEdgeRecord>& edges,
                              const std::vector<int64_t>& node_ids) {
   if (!db_ || edges.empty() || node_ids.empty()) return true;
-  const char* sql = "INSERT INTO cfg_edge(from_node_id,to_node_id,edge_type) VALUES(?,?,?)";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  std::vector<std::tuple<int64_t, int64_t, std::string>> rows;
+  rows.reserve(edges.size());
   for (const auto& e : edges) {
     if (e.from_node_index < 0 || e.from_node_index >= static_cast<int>(node_ids.size()) ||
         e.to_node_index < 0 || e.to_node_index >= static_cast<int>(node_ids.size()))
       continue;
     int64_t from_id = node_ids[e.from_node_index];
     int64_t to_id = node_ids[e.to_node_index];
-    if (from_id == 0 || to_id == 0) continue;
+    if (from_id != 0 && to_id != 0)
+      rows.emplace_back(from_id, to_id, e.edge_type);
+  }
+  if (rows.empty()) return true;
+  std::string sql = "INSERT INTO cfg_edge(from_node_id,to_node_id,edge_type) VALUES";
+  for (int i = 0; i < kBatchSize; ++i) sql += (i ? ",(?,?,?)" : "(?,?,?)");
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+  for (size_t off = 0; off < rows.size(); off += kBatchSize) {
+    size_t n = std::min(static_cast<size_t>(kBatchSize), rows.size() - off);
+    if (n < static_cast<size_t>(kBatchSize)) {
+      sqlite3_finalize(stmt);
+      sql = "INSERT INTO cfg_edge(from_node_id,to_node_id,edge_type) VALUES";
+      for (size_t i = 0; i < n; ++i) sql += (i ? ",(?,?,?)" : "(?,?,?)");
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return false;
+    }
+    int idx = 1;
+    for (size_t i = 0; i < n; ++i) {
+      const auto& t = rows[off + i];
+      sqlite3_bind_int64(stmt, idx++, std::get<0>(t));
+      sqlite3_bind_int64(stmt, idx++, std::get<1>(t));
+      sqlite3_bind_text(stmt, idx++, std::get<2>(t).c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) { sqlite3_finalize(stmt); return false; }
     sqlite3_reset(stmt);
-    sqlite3_bind_int64(stmt, 1, from_id);
-    sqlite3_bind_int64(stmt, 2, to_id);
-    sqlite3_bind_text(stmt, 3, e.edge_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
   }
   sqlite3_finalize(stmt);
   return true;
