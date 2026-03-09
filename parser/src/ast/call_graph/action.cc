@@ -52,7 +52,10 @@ using namespace clang;
 
 static int GetLine(const SourceManager& SM, SourceLocation loc) {
   if (loc.isInvalid()) return 0;
-  return SM.getSpellingLineNumber(loc);
+  unsigned line = SM.getSpellingLineNumber(loc);
+  if (line == 0)
+    line = SM.getExpansionLineNumber(loc);
+  return static_cast<int>(line);
 }
 static int GetColumn(const SourceManager& SM, SourceLocation loc) {
   if (loc.isInvalid()) return 0;
@@ -66,7 +69,8 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
 
   bool TraverseFunctionDecl(FunctionDecl* D) {
     if (!D || !out_) return true;
-    if (D->isImplicit() || !D->getLocation().isValid())
+    /* 仅跳过隐式声明；类外定义的成员函数 getLocation() 可能指向头文件或无效，仍应收集其定义位置 */
+    if (D->isImplicit())
       return RecursiveASTVisitor::TraverseFunctionDecl(D);
     SymbolRecord sym = SymbolFromDecl(D);
     if (sym.usr.empty()) return RecursiveASTVisitor::TraverseFunctionDecl(D);
