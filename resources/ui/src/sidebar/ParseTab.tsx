@@ -2,14 +2,22 @@ import React from 'react';
 import { Codicon } from '../shared/icons';
 import type { ParseRun } from '../shared/types';
 
+interface ParseResultSummary {
+  status: string;
+  files_parsed?: number;
+  files_failed?: number;
+  message?: string;
+}
+
 interface ParseTabProps {
   projectRoot: string;
   parseProgress: number | null;
+  lastParseResult: ParseResultSummary | null;
   historyRuns: ParseRun[];
   onMessage: ((msg: unknown) => void) | null;
 }
 
-export function ParseTab({ projectRoot, parseProgress, historyRuns, onMessage }: ParseTabProps) {
+export function ParseTab({ projectRoot, parseProgress, lastParseResult, historyRuns, onMessage }: ParseTabProps) {
   const send = (action: string, payload?: unknown) => {
     onMessage?.(payload ? { action, payload } : { action });
   };
@@ -34,6 +42,13 @@ export function ParseTab({ projectRoot, parseProgress, historyRuns, onMessage }:
       </div>
       {parseProgress !== null && (
         <div className="section progress">解析中… {parseProgress}%</div>
+      )}
+      {lastParseResult && parseProgress === null && (
+        <div className="section parse-summary">
+          {lastParseResult.status === 'ok'
+            ? `最近: ${lastParseResult.files_parsed ?? 0} 个文件, ${lastParseResult.files_failed ?? 0} 失败`
+            : `解析失败: ${lastParseResult.message ?? ''}`}
+        </div>
       )}
       <div className="section">
         <label>历史解析记录</label>

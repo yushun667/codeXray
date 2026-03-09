@@ -36,7 +36,7 @@ export interface HostToSidebarMessage {
   action: SidebarMessageAction;
   project?: { root?: string; compileCommands?: string; databasePath?: string };
   percent?: number;
-  result?: { status: string; message?: string };
+  result?: { status: string; message?: string; files_parsed?: number; files_failed?: number };
   runs?: unknown[];
   full?: string;
   chunk?: string;

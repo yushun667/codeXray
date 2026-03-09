@@ -13,6 +13,12 @@ export function SidebarContainer() {
   const [activeTab, setActiveTab] = useState<'parse' | 'chat'>('parse');
   const [projectRoot, setProjectRoot] = useState<string>('');
   const [parseProgress, setParseProgress] = useState<number | null>(null);
+  const [lastParseResult, setLastParseResult] = useState<{
+    status: string;
+    files_parsed?: number;
+    files_failed?: number;
+    message?: string;
+  } | null>(null);
   const [historyRuns, setHistoryRuns] = useState<ParseRun[]>([]);
 
   useEffect(() => {
@@ -37,6 +43,8 @@ export function SidebarContainer() {
       }
       if (action === 'parseResult' || action === 'parseDone') {
         setParseProgress(null);
+        const res = (m as { result?: { status: string; files_parsed?: number; files_failed?: number; message?: string } }).result;
+        if (res) setLastParseResult(res);
       }
       if (action === 'parseHistory' && Array.isArray((m as { runs?: ParseRun[] }).runs)) {
         setHistoryRuns((m as { runs: ParseRun[] }).runs);
@@ -66,6 +74,7 @@ export function SidebarContainer() {
         <ParseTab
           projectRoot={projectRoot}
           parseProgress={parseProgress}
+          lastParseResult={lastParseResult}
           historyRuns={historyRuns}
           onMessage={vscode?.postMessage}
         />

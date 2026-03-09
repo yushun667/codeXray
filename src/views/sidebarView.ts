@@ -1,10 +1,11 @@
 /**
  * 侧边栏容器与双标签（解析管理 / AI 对话），postMessage 按 action 分发
- * 参考：主仓库详细功能与架构设计 §4.6；02-可视化界面/UI与交互逻辑
+ * 优先加载 resources/ui/dist/sidebar.html（React 构建产物），失败时回退内联 HTML
  */
 
 import * as path from 'path';
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import { createLogger } from '../logger';
 import type { Config } from '../config';
 import type { ParserService } from '../services/parserService';
@@ -53,10 +54,7 @@ export class SidebarView implements vscode.WebviewViewProvider {
       localResourceRoots: [this._extensionUri],
     };
 
-    const codiconCssUri = webviewView.webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css')
-    );
-    webviewView.webview.html = this._getHtml(webviewView.webview, codiconCssUri.toString());
+    this._setSidebarHtml(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage((msg: { action: string; payload?: Record<string, unknown> }) => {
       const action = msg.action ?? '';
@@ -103,6 +101,20 @@ export class SidebarView implements vscode.WebviewViewProvider {
         log.warn('postMessage chatReply 失败', e);
       }
     });
+
+    setTimeout(() => {
+      if (this._deps?.config) {
+        try {
+          webviewView.webview.postMessage({
+            action: 'initState',
+            projectPath: this._deps.config.getWorkspaceRootFsPath(),
+            compileCommandsPath: this._deps.config.getCompileCommandsPath(),
+          });
+        } catch (e) {
+          log.warn('postMessage initState 失败', e);
+        }
+      }
+    }, 300);
   }
 
   /** 供 extension 在解析进度/完成时通知 Webview 更新 */
@@ -116,7 +128,41 @@ export class SidebarView implements vscode.WebviewViewProvider {
     }
   }
 
-  private _getHtml(webview: vscode.Webview, codiconCssUri: string): string {
+  /** 优先加载 dist/sidebar.html 并替换资源为 webview URI；失败则用内联 HTML */
+  private _setSidebarHtml(webview: vscode.Webview): void {
+    const distPath = path.join(this._extensionUri.fsPath, 'resources', 'ui', 'dist', 'sidebar.html');
+    try {
+      if (fs.existsSync(distPath)) {
+        let html = fs.readFileSync(distPath, 'utf8');
+        const baseUri = vscode.Uri.joinPath(this._extensionUri, 'resources', 'ui', 'dist');
+        html = html.replace(/(href|src)="([^"]+)"/g, (_: string, attr: string, value: string) => {
+          const rel = value.startsWith('./') ? value.slice(1) : value;
+          const parts = rel.split('/').filter(Boolean);
+          const full = parts.length ? vscode.Uri.joinPath(baseUri, ...parts) : baseUri;
+          const uri = webview.asWebviewUri(full);
+          return `${attr}="${uri}"`;
+        });
+        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; font-src ${webview.cspSource}; connect-src ${webview.cspSource};`;
+        if (!html.includes('Content-Security-Policy')) {
+          html = html.replace('<head>', `<head>\n  <meta http-equiv="Content-Security-Policy" content="${csp}">`);
+        }
+        if (!html.includes('sidebar-webview-layout')) {
+          html = html.replace('</head>', `<style id="sidebar-webview-layout">html, body { margin: 0; min-height: 100%; height: 100%; } #root { min-height: 100%; height: 100%; }</style>\n</head>`);
+        }
+        webview.html = html;
+        log.info('侧边栏已加载 dist/sidebar.html');
+        return;
+      }
+    } catch (e) {
+      log.warn('加载 dist/sidebar.html 失败，使用内联 HTML', e instanceof Error ? e.message : String(e));
+    }
+    const codiconCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css')
+    );
+    webview.html = this._getInlineHtml(webview, codiconCssUri.toString());
+  }
+
+  private _getInlineHtml(webview: vscode.Webview, codiconCssUri: string): string {
     const nonce = Date.now().toString(36);
     return `<!DOCTYPE html>
 <html>
@@ -158,6 +204,12 @@ export class SidebarView implements vscode.WebviewViewProvider {
       <button id="btnParse"><span class="codicon codicon-play"></span> 解析</button>
       <button id="btnHistory"><span class="codicon codicon-history"></span> 历史</button>
     </div>
+    <div class="section" id="parseProgressSection" style="display:none;">
+      <label id="parseProgressLabel">解析中… 0%</label>
+    </div>
+    <div class="section" id="parseSummarySection" style="display:none;">
+      <label id="parseSummaryLabel"></label>
+    </div>
     <div class="section">
       <label>历史解析记录</label>
       <div id="historyList"></div>
@@ -197,13 +249,31 @@ export class SidebarView implements vscode.WebviewViewProvider {
       if (m.action === 'projectInfo' && m.project) {
         document.getElementById('projectRoot').textContent = m.project.root || '(无工作区)';
       }
+      if (m.action === 'initState') {
+        document.getElementById('projectRoot').textContent = m.projectPath || m.compileCommandsPath || '(无工作区)';
+      }
+      if (m.action === 'parseProgress' && typeof m.percent === 'number') {
+        var prog = document.getElementById('parseProgressSection');
+        var lab = document.getElementById('parseProgressLabel');
+        if (prog && lab) { prog.style.display = 'block'; lab.textContent = '解析中… ' + m.percent + '%'; }
+      }
       if (m.action === 'parseHistory' && Array.isArray(m.runs)) {
         const el = document.getElementById('historyList');
         el.innerHTML = m.runs.length ? m.runs.map(r => '<div>' + (r.run_id || '') + ' ' + (r.started_at || '') + ' ' + (r.mode || '') + ' ' + (r.status || '') + '</div>').join('') : '<div>无记录</div>';
       }
       if (m.action === 'parseResult' && m.result) {
-        if (m.result.status === 'ok') { document.getElementById('projectRoot').textContent = '解析完成'; }
-        else { document.getElementById('projectRoot').textContent = '解析失败: ' + (m.result.message || ''); }
+        var progSec = document.getElementById('parseProgressSection');
+        if (progSec) progSec.style.display = 'none';
+        var sumSec = document.getElementById('parseSummarySection');
+        var sumLab = document.getElementById('parseSummaryLabel');
+        if (sumSec && sumLab) {
+          sumSec.style.display = 'block';
+          if (m.result.status === 'ok') {
+            sumLab.textContent = '最近: ' + (m.result.files_parsed ?? 0) + ' 个文件, ' + (m.result.files_failed ?? 0) + ' 失败';
+          } else {
+            sumLab.textContent = '解析失败: ' + (m.result.message || '');
+          }
+        }
       }
       if (m.action === 'chatReply' && m.full) {
         document.getElementById('chatMessages').insertAdjacentHTML('beforeend', '<div class="msg assistant">' + escapeHtml(m.full) + '</div>');

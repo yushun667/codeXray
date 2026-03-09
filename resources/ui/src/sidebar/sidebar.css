@@ -74,6 +74,11 @@
   color: var(--vscode-descriptionForeground);
 }
 
+.parse-summary {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
 .history-list {
   max-height: 200px;
   overflow-y: auto;

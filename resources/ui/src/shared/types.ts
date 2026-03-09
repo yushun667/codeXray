@@ -52,11 +52,12 @@ export interface GraphData {
 }
 
 export interface ParseRun {
-  run_id: string;
+  run_id: string | number;
   started_at: string;
   finished_at?: string;
   mode: 'full' | 'incremental';
   files_parsed?: number;
+  files_failed?: number;
   status: string;
   [key: string]: unknown;
 }

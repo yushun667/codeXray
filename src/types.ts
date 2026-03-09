@@ -76,12 +76,13 @@ export interface ParseRun {
   [key: string]: unknown;
 }
 
-/** 解析结果摘要 */
+/** 解析结果摘要（与解析引擎 stdout 摘要 JSON 一致） */
 export interface ParseResult {
   status: 'ok' | 'error';
-  run_id?: string;
+  run_id?: number | string;
   mode?: 'full' | 'incremental';
   files_parsed?: number;
+  files_failed?: number;
   symbols?: number;
   errors?: string[];
   message?: string;

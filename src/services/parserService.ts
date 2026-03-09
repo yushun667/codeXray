@@ -4,6 +4,7 @@
  */
 
 import * as child_process from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import type { Config } from '../config';
 import { createLogger } from '../logger';
@@ -51,13 +52,31 @@ export class ParserService {
       return { status: 'error', message: '无工作区根路径' };
     }
 
+    const compileCommandsResolved = compileCommands
+      ? (path.isAbsolute(compileCommands) ? compileCommands : path.join(project, compileCommands))
+      : '';
+    if (!compileCommandsResolved) {
+      log.warn('未配置 compile_commands 路径，无法解析');
+      return {
+        status: 'error',
+        message: '请先设置 compile_commands.json 路径（设置 → CodeXray: compileCommandsPath，或执行命令 CodeXray: 设置 compile_commands.json 路径）',
+      };
+    }
+    if (!fs.existsSync(compileCommandsResolved)) {
+      log.warn('compile_commands 路径不存在', compileCommandsResolved);
+      return {
+        status: 'error',
+        message: `compile_commands.json 路径不存在或不可读：${compileCommandsResolved}`,
+      };
+    }
+    log.info('使用 compile_commands', compileCommandsResolved);
     const args = [
       SUBCOMMAND_PARSE,
       '--project', project,
       '--output-db', outputDb,
     ];
-    if (compileCommands) {
-      args.push('--compile-commands', path.isAbsolute(compileCommands) ? compileCommands : path.join(project, compileCommands));
+    if (compileCommandsResolved) {
+      args.push('--compile-commands', compileCommandsResolved);
     }
     args.push('--parallel', String(opts.parallelism));
     if (opts.lazy) {
@@ -69,6 +88,14 @@ export class ParserService {
     const useIncremental = options?.incremental ?? opts.incremental;
     if (useIncremental) {
       args.push('--incremental');
+    }
+
+    if (outputDb) {
+      try {
+        fs.mkdirSync(path.dirname(outputDb), { recursive: true });
+      } catch (e) {
+        log.warn('创建数据库目录失败', e instanceof Error ? e.message : String(e));
+      }
     }
 
     return new Promise<ParseResult>((resolve) => {
@@ -85,8 +112,9 @@ export class ParserService {
           for (const line of lines) {
             try {
               const obj = JSON.parse(line) as Record<string, unknown>;
-              if (typeof obj.percent === 'number') {
-                this._progressCallback?.(Math.min(100, Math.max(0, obj.percent)));
+              const pct = typeof obj.percent === 'number' ? obj.percent : typeof obj.progress === 'number' ? obj.progress : undefined;
+              if (pct !== undefined) {
+                this._progressCallback?.(Math.min(100, Math.max(0, pct)));
               }
               if (obj.status === 'ok' || obj.status === 'error') {
                 lastSummary = obj as unknown as ParseResult;
@@ -114,9 +142,14 @@ export class ParserService {
           if (code === 0 && lastSummary) {
             resolve(lastSummary);
           } else if (code !== 0 && code != null) {
+            const message = code === 4
+              ? '解析失败：请确认工作区 .codexray 目录可写，且项目根或配置路径下存在有效的 compile_commands.json（如 CMake 生成）'
+              : code === 2
+                ? 'compile_commands.json 未找到或无效'
+                : `解析退出码 ${code}`;
             resolve({
               status: 'error',
-              message: `解析退出码 ${code}`,
+              message,
               errors: lastSummary?.errors,
             });
           } else {

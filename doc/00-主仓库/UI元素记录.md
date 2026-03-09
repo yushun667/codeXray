@@ -13,9 +13,11 @@
 
 | 元素 | 位置 | 作用 | 交互逻辑 |
 |------|------|------|----------|
-| 工程路径 | 面板顶部只读文本 | 显示当前工作区根路径 | 无交互；由 getProject 消息回填 |
-| 「解析」按钮 | 解析管理面板 | 触发全量/增量解析 | 点击 → postMessage runParse → 扩展调用 parserService.parse()，状态栏显示进度，结果通过 parseResult 回传 |
+| 工程路径 | 面板顶部只读文本 | 显示当前工作区根路径 | 无交互；由 getProject / initState 回填 |
+| 「解析」按钮 | 解析管理面板 | 触发全量/增量解析 | 点击 → postMessage runParse → 扩展调用 parserService.parse()，状态栏与侧栏显示进度，结果通过 parseResult 回传 |
 | 「历史」按钮 | 解析管理面板 | 查看历史解析记录 | 点击 → postMessage listParseHistory → 扩展调用 parserService.listRuns()，列表通过 parseHistory 回传 |
+| 解析进度（解析中… N%） | 解析管理面板、解析按钮下方 | 解析进行时显示百分比 | 由 parseProgress 消息更新；解析结束即隐藏 |
+| 解析结果摘要（最近: X 个文件, Y 失败 / 解析失败: …） | 解析管理面板、进度下方 | 最近一次解析结果摘要 | 由 parseResult 消息更新；成功时显示 files_parsed、files_failed，失败时显示 message |
 | 历史解析记录列表 | 解析管理面板下方 | 展示 run_id、时间、mode、status | 只读展示；由 parseHistory 消息更新 |
 
 ### 1.2 AI 对话标签页
