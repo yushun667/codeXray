@@ -13,6 +13,17 @@ export interface FlowNodeData {
   name?: string;
 }
 
+/** 节点显示名：函数名 + 文件名 + 行号，不使用 USR（供各 adapter 复用） */
+export function nodeLabel(n: ApiNode): string {
+  const name = n.name ?? '?';
+  const def = n.definition;
+  if (def?.file != null && def?.line != null) {
+    const base = def.file.replace(/^.*[/\\]/, '');
+    return `${name} (${base}:${def.line})`;
+  }
+  return name;
+}
+
 /**
  * call_graph 数据 -> React Flow nodes/edges（position 由 layout 后续计算）
  */
@@ -28,7 +39,7 @@ export function adaptCallGraph(data: GraphData): { nodes: Node<FlowNodeData>[]; 
       type: 'default',
       position: { x: 0, y: 0 },
       data: {
-        label: n.name ?? n.id ?? '',
+        label: nodeLabel(n),
         definition: n.definition,
         definition_range: n.definition_range,
         usr: n.usr,

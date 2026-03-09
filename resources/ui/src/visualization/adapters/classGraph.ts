@@ -5,6 +5,7 @@
 import type { Node, Edge } from 'reactflow';
 import type { GraphData, GraphNode as ApiNode, GraphEdge as ApiEdge } from '../../shared/types';
 import type { FlowNodeData } from './callGraph';
+import { nodeLabel } from './callGraph';
 
 /**
  * class_graph 数据 -> React Flow nodes/edges（position 由 layout 后续计算）
@@ -21,7 +22,7 @@ export function adaptClassGraph(data: GraphData): { nodes: Node<FlowNodeData>[];
       type: 'default',
       position: { x: 0, y: 0 },
       data: {
-        label: n.name ?? n.id ?? '',
+        label: nodeLabel(n),
         definition: n.definition,
         definition_range: n.definition_range,
         usr: n.usr,
