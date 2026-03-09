@@ -1,7 +1,18 @@
+html, body {
+  height: 100%;
+  margin: 0;
+}
+#root {
+  height: 100%;
+}
+
 .graph-app {
   font-family: var(--vscode-font-family);
   padding: 12px;
   margin: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
   background: var(--vscode-editor-background);
   color: var(--vscode-editor-foreground);
 }
@@ -20,8 +31,8 @@
 
 .graph-core-wrap {
   width: 100%;
-  height: calc(100vh - 80px);
-  min-height: 400px;
+  flex: 1;
+  min-height: 0; /* 允许 flex 收缩，避免溢出 */
 }
 
 .graph-context-menu {

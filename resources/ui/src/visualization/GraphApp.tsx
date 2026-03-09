@@ -6,6 +6,9 @@ import { getLayoutedElements } from './graphLayout';
 import { mergeGraph } from './graphMerge';
 import { GraphCore } from './GraphCore';
 
+declare const acquireVsCodeApi: (() => { postMessage: (msg: unknown) => void }) | undefined;
+const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+
 const GRAPH_TYPE_TITLE: Record<GraphType, string> = {
   call_graph: '调用链',
   class_graph: '类关系图',
@@ -23,6 +26,10 @@ export function GraphApp() {
   nodesRef.current = nodes;
   edgesRef.current = edges;
   graphTypeRef.current = graphType;
+
+  useEffect(() => {
+    if (vscode) vscode.postMessage({ action: 'graphReady' });
+  }, []);
 
   useEffect(() => {
     const handler = (event: MessageEvent<{

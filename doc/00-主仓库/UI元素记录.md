@@ -58,7 +58,7 @@
 - **Host → 侧边栏**：`initState`（初次加载 projectPath、compileCommandsPath）、`parseProgress`（percent）、`replyChunk`（流式片段）、`replyDone`、`projectInfo`、`parseHistory`、`parseResult`、`chatReply`、`context`、`error`。
 - **侧边栏 → Host**：`runParse`、`listParseHistory`、`getProject`、`setCompileCommands`、`sendChat`、`getContext`。
 - **Host → 图**：`initGraph`（graphType、data）、`graphAppend`（nodes、edges）。
-- **图 → Host**：`gotoSymbol`（uri、line、column）、`queryPredecessors`（graphType、nodeId）、`querySuccessors`（graphType、nodeId）。
+- **图 → Host**：`graphReady`（挂载完成后发送，Host 收到后下发 initGraph，避免界面不显示）、`gotoSymbol`（uri、line、column）、`queryPredecessors`（graphType、nodeId）、`querySuccessors`（graphType、nodeId）。
 
 ## 5. 命令面板
 
