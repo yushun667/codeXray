@@ -130,16 +130,7 @@ bool RunAllAnalysesOnTU(const TUEntry& tu,
       dir, ::llvm::ArrayRef<std::string>(tu.compile_args));
   ::clang::tooling::ClangTool tool(*db, ::llvm::ArrayRef<std::string>(tu.source_file));
 
-  ClangIncludeEnv env = GetClangIncludeEnv();
-  std::vector<std::string> extra;
-  if (!env.resource_dir.empty()) {
-    extra.push_back("-resource-dir");
-    extra.push_back(env.resource_dir);
-  }
-  for (const std::string& p : env.system_include_paths) {
-    extra.push_back("-isystem");
-    extra.push_back(p);
-  }
+  const std::vector<std::string>& extra = GetClangIncludeEnvExtraArgs();
   if (!extra.empty())
     tool.appendArgumentsAdjuster(
         ::clang::tooling::getInsertArgumentAdjuster(extra, ::clang::tooling::ArgumentInsertPosition::BEGIN));
@@ -150,8 +141,6 @@ bool RunAllAnalysesOnTU(const TUEntry& tu,
     LogError("RunAllAnalysesOnTU: ClangTool run returned %d for %s", ret, tu.source_file.c_str());
     return false;
   }
-  LogInfo("RunAllAnalysesOnTU: %s done (cg %zu symbols, %zu edges)",
-          tu.source_file.c_str(), cg_out->symbols.size(), cg_out->edges.size());
   return true;
 }
 

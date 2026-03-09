@@ -89,9 +89,6 @@ std::vector<std::string> GetPossibleCallees(CallExpr* call, ASTContext& ctx,
   const FunctionProtoType* fpt = GetFunctionType(qt);
   if (!fpt) return result;
   CollectMatchingFunctions(ctx, fpt, &result);
-  if (!result.empty())
-    LogInfo("GetPossibleCallees: caller %s -> %zu possible callee(s)",
-            caller_usr.c_str(), result.size());
   return result;
 }
 

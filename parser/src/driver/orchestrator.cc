@@ -205,7 +205,6 @@ int RunParse(const ParseOptions& opts) {
 
   const size_t total_steps = tus_to_run.size() + 1;  // +1 for DB write phase
   ProgressCallback on_progress = [&](size_t done, size_t total) {
-    LogInfo("RunParse progress: %zu/%zu", done, total);
     if (opts.progress_stdout) opts.progress_stdout(done, total_steps);
   };
 

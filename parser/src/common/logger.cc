@@ -54,7 +54,7 @@ void WriteLog(const char* level, const char* fmt, std::va_list ap) {
   std::lock_guard<std::mutex> lock(g_log_mutex);
   if (g_log_file) {
     std::fputs(line.c_str(), g_log_file);
-    std::fflush(g_log_file);
+    if (level[0] == 'E') std::fflush(g_log_file);
   }
   if (g_also_stderr) {
     std::fputs(line.c_str(), stderr);
