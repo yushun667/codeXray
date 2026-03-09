@@ -18,7 +18,11 @@
     "onCommand:codexray.runParse",
     "onCommand:codexray.listParseHistory",
     "onCommand:codexray.openAIChat",
-    "onCommand:codexray.gotoSymbolInEditor"
+    "onCommand:codexray.gotoSymbolInEditor",
+    "onCommand:codexray.queryCallGraph",
+    "onCommand:codexray.queryClassGraph",
+    "onCommand:codexray.queryDataFlow",
+    "onCommand:codexray.queryControlFlow"
   ],
   "main": "./out/extension.js",
   "extensionKind": [
@@ -51,6 +55,22 @@
         "command": "codexray.gotoSymbolInEditor",
         "title": "CodeXray: 定位到代码",
         "when": "false"
+      },
+      {
+        "command": "codexray.queryCallGraph",
+        "title": "CodeXray: 查看调用链"
+      },
+      {
+        "command": "codexray.queryClassGraph",
+        "title": "CodeXray: 查看类关系"
+      },
+      {
+        "command": "codexray.queryDataFlow",
+        "title": "CodeXray: 查看数据流"
+      },
+      {
+        "command": "codexray.queryControlFlow",
+        "title": "CodeXray: 查看控制流"
       }
     ],
     "viewsContainers": {
@@ -151,7 +171,25 @@
       }
     },
     "menus": {
-      "commandPalette": []
+      "commandPalette": [],
+      "editor/context": [
+        {
+          "command": "codexray.queryCallGraph",
+          "when": "editorLangId == c || editorLangId == cpp"
+        },
+        {
+          "command": "codexray.queryClassGraph",
+          "when": "editorLangId == c || editorLangId == cpp"
+        },
+        {
+          "command": "codexray.queryDataFlow",
+          "when": "editorLangId == c || editorLangId == cpp"
+        },
+        {
+          "command": "codexray.queryControlFlow",
+          "when": "editorLangId == c || editorLangId == cpp"
+        }
+      ]
     }
   },
   "scripts": {

@@ -9,8 +9,10 @@ import { createLogger, setLogLevel, setLogPath } from './logger';
 import { ParserService } from './services/parserService';
 import { AgentService } from './services/agentService';
 import { StatusBar } from './statusBar';
-import { registerGotoSymbolCommand } from './editor/gotoSymbol';
+import { registerGotoSymbolCommand, execute as gotoSymbolExecute } from './editor/gotoSymbol';
+import { registerEditorCommands } from './editor/editorIntegration';
 import { SidebarView } from './views/sidebarView';
+import { VisualizationProvider } from './views/visualizationProvider';
 
 const log = createLogger('extension');
 
@@ -19,6 +21,7 @@ let parserService: ParserService;
 let agentService: AgentService;
 let statusBar: StatusBar;
 let sidebarView: SidebarView;
+let visualizationProvider: VisualizationProvider;
 
 export function activate(context: vscode.ExtensionContext): void {
   log.info('activate 开始');
@@ -43,6 +46,12 @@ export function activate(context: vscode.ExtensionContext): void {
   sidebarView = new SidebarView(context);
   sidebarView.setDeps({ config, parserService, agentService, statusBar });
 
+  visualizationProvider = new VisualizationProvider({
+    extensionUri: context.extensionUri,
+    parserService,
+    gotoSymbolExecute,
+  });
+
   // 必须先注册视图提供程序，否则侧边栏会报「没有可提供视图数据的已注册数据提供程序」
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('codexray.sidebar', sidebarView, {
@@ -58,9 +67,11 @@ export function activate(context: vscode.ExtensionContext): void {
     sidebarView.postToWebview({ action: 'parseProgress', percent });
   });
 
-  context.subscriptions.push(
-    registerGotoSymbolCommand(context)
-  );
+  context.subscriptions.push(registerGotoSymbolCommand(context));
+
+  for (const d of registerEditorCommands(context, { parserService, visualizationProvider })) {
+    context.subscriptions.push(d);
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('codexray.runParse', async () => {

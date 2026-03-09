@@ -4,6 +4,7 @@
  * 参考：主仓库详细功能与架构设计 §4.2
  */
 
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -48,13 +49,17 @@ export class Config {
     return (cfg.get<string>('compileCommandsPath') ?? '').trim();
   }
 
-  /** 解析器可执行体路径，随扩展打包 */
+  /** 解析器可执行体路径；优先 bin/，开发时若不存在则用 parser/build/ */
   getParserPath(): string {
     if (!this._context) {
       return path.join('bin', process.platform === 'win32' ? 'codexray-parser.exe' : 'codexray-parser');
     }
     const base = process.platform === 'win32' ? 'codexray-parser.exe' : 'codexray-parser';
-    return this._context.asAbsolutePath(path.join('bin', base));
+    const binPath = this._context.asAbsolutePath(path.join('bin', base));
+    if (fs.existsSync(binPath)) return binPath;
+    const buildPath = this._context.asAbsolutePath(path.join('parser', 'build', base));
+    if (fs.existsSync(buildPath)) return buildPath;
+    return binPath;
   }
 
   /** Agent 可执行体路径（stdio 模式时 spawn 用），随扩展打包 */

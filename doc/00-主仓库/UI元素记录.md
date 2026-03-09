@@ -29,19 +29,40 @@
 | 输入框 | 多行文本框 | 输入要发送的消息 | 用户输入后点击发送 |
 | 「发送」按钮 | 输入框下方 | 发送消息给 Agent | 点击 → postMessage sendChat(message) → 扩展调用 agentService.sendChat()，回复经 onReply 以 chatReply 回传并追加到消息列表 |
 
-## 2. 状态栏
+## 2. 编辑区 · 图标签
+
+| 位置 | 说明 | 交互逻辑 |
+|------|------|----------|
+| 编辑区新标签 | WebviewPanel 加载 **resources/ui/dist/graph.html**，与代码文件标签并列 | 通过编辑器右键「查看调用链/类关系/数据流/控制流」或命令面板打开；标题为「CodeXray · 调用链图」等 |
+
+### 2.1 图画布
+
+| 元素 | 位置 | 作用 | 交互逻辑 |
+|------|------|------|----------|
+| 画布 | 图标签主体 | 展示节点与边（React Flow） | 支持缩放（滚轮）、平移（拖拽空白）、fitView |
+| 节点 | 画布上 | 表示函数/类/变量/基本块等 | 单击 → postMessage(gotoSymbol) → 扩展执行 showTextDocument + revealRange 定位到代码；可选中、框选、拖拽移动、Delete 删除 |
+| 边 | 节点之间 | 表示调用/继承/数据流/控制流 | 随节点布局显示 |
+| 右键菜单 | 节点右键 | 扩展查询 | 显示「继续查询前置节点」「继续查询后置节点」→ postMessage(queryPredecessors/querySuccessors) → 扩展 query 后 graphAppend 合并到当前图 |
+| 控件 | 画布一角 | 缩放等 | React Flow Controls 组件 |
+
+### 2.2 图与 Host 消息协议
+
+- **图 → Host**：`gotoSymbol`（file, line, column）、`queryPredecessors`、`querySuccessors`（graphType, nodeId, symbol, file）。
+- **Host → 图**：`initGraph`（graphType, nodes, edges）、`graphAppend`（nodes, edges）。
+
+## 3. 状态栏
 
 | 位置 | 说明 | 交互逻辑 |
 |------|------|----------|
 | 状态栏右侧 | 解析进度 / 完成 / 失败 | runParse 进行中显示「CodeXray 解析 N%」；完成显示「解析完成」；失败显示「解析失败」 | 由 parserService.onProgress 与 runParse 结果驱动，无用户点击 |
 
-## 3. 消息协议（postMessage）补充
+## 4. 消息协议（postMessage）补充
 
 - **Host → 侧边栏**：`initState`（初次加载 projectPath、compileCommandsPath）、`parseProgress`（percent）、`replyChunk`（流式片段）、`replyDone`、`projectInfo`、`parseHistory`、`parseResult`、`chatReply`、`context`、`error`。
 - **侧边栏 → Host**：`runParse`、`listParseHistory`、`getProject`、`setCompileCommands`、`sendChat`、`getContext`。
+- **Host → 图**：`initGraph`、`graphAppend`（见 2.2）。
+- **图 → Host**：`gotoSymbol`、`queryPredecessors`、`querySuccessors`（见 2.2）。
 
-**说明**：可视化图界面（编辑区 graph 标签、调用链/类图/数据流/控制流）已移除，相关 postMessage 协议不再使用。
+## 5. 命令面板与编辑器菜单
 
-## 4. 命令面板
-
-所有命令均在命令面板中暴露：打开工程、设置 compile_commands、执行解析、查看历史、打开 AI 对话、定位到代码等；交互逻辑见各命令在 extension.ts 中的实现与上文对应 UI。
+所有命令均在命令面板中暴露：打开工程、设置 compile_commands、执行解析、查看历史、打开 AI 对话、定位到代码、查看调用链/类关系/数据流/控制流等。C/C++ 编辑器右键菜单（when: editorLangId 为 c 或 cpp）提供「CodeXray: 查看调用链」「CodeXray: 查看类关系」「CodeXray: 查看数据流」「CodeXray: 查看控制流」；交互逻辑见 extension.ts、editorIntegration.ts、visualizationProvider.ts 与上文对应 UI。
