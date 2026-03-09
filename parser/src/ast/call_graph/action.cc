@@ -91,8 +91,9 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
     return ok;
   }
 
-  /* RecursiveASTVisitor 对 CXXMethodDecl 等会走 TraverseCXXMethodDecl，不会走 TraverseFunctionDecl，
-   * 导致成员函数未被收集。显式委托到 TraverseFunctionDecl 以记录成员函数符号与调用边。 */
+  /* RecursiveASTVisitor 对以下类型会走各自的 Traverse*，不会走 TraverseFunctionDecl，
+   * 导致未被收集。显式委托到 TraverseFunctionDecl 以记录符号与调用边。 */
+  bool TraverseCXXDeductionGuideDecl(CXXDeductionGuideDecl* D) { return TraverseFunctionDecl(D); }
   bool TraverseCXXMethodDecl(CXXMethodDecl* D) { return TraverseFunctionDecl(D); }
   bool TraverseCXXConstructorDecl(CXXConstructorDecl* D) { return TraverseFunctionDecl(D); }
   bool TraverseCXXDestructorDecl(CXXDestructorDecl* D) { return TraverseFunctionDecl(D); }
@@ -157,6 +158,7 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
     if (dyn_cast<CXXConstructorDecl>(D)) sym.kind = "constructor";
     else if (dyn_cast<CXXDestructorDecl>(D)) sym.kind = "destructor";
     else if (dyn_cast<CXXMethodDecl>(D)) sym.kind = "method";
+    else if (dyn_cast<CXXDeductionGuideDecl>(D)) sym.kind = "deduction_guide";
     else sym.kind = "function";
     const SourceManager& SM = *sm_;
     FileID mainFID = SM.getMainFileID();

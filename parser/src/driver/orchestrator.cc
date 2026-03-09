@@ -188,7 +188,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary_out) {
           e.decl_line_end = s.decl_line_end;
           e.decl_column_end = s.decl_column_end;
         }
-        if (e.kind == "function" && (s.kind == "method" || s.kind == "constructor" || s.kind == "destructor"))
+        if (e.kind == "function" && (s.kind == "method" || s.kind == "constructor" || s.kind == "destructor" || s.kind == "deduction_guide"))
           e.kind = s.kind;
       }
     }
@@ -384,7 +384,7 @@ int ParseOnDemandForQuery(const std::string& project_root,
           e.decl_line_end = s.decl_line_end;
           e.decl_column_end = s.decl_column_end;
         }
-        if (e.kind == "function" && (s.kind == "method" || s.kind == "constructor" || s.kind == "destructor"))
+        if (e.kind == "function" && (s.kind == "method" || s.kind == "constructor" || s.kind == "destructor" || s.kind == "deduction_guide"))
           e.kind = s.kind;
       }
     }

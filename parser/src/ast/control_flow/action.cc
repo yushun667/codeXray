@@ -126,7 +126,8 @@ class ControlFlowVisitor : public RecursiveASTVisitor<ControlFlowVisitor> {
     return true;
   }
 
-  /* RecursiveASTVisitor 对成员函数走 VisitCXXMethodDecl 等，不会走 VisitFunctionDecl，需显式委托以生成 CFG。 */
+  /* RecursiveASTVisitor 对以下类型走各自的 Visit*，不会走 VisitFunctionDecl，需显式委托以生成 CFG。 */
+  bool VisitCXXDeductionGuideDecl(CXXDeductionGuideDecl* D) { return VisitFunctionDecl(D); }
   bool VisitCXXMethodDecl(CXXMethodDecl* D) { return VisitFunctionDecl(D); }
   bool VisitCXXConstructorDecl(CXXConstructorDecl* D) { return VisitFunctionDecl(D); }
   bool VisitCXXDestructorDecl(CXXDestructorDecl* D) { return VisitFunctionDecl(D); }

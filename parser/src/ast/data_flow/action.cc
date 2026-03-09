@@ -73,7 +73,8 @@ class DataFlowVisitor : public RecursiveASTVisitor<DataFlowVisitor> {
     return ok;
   }
 
-  /* 与 call_graph 相同：使成员函数参与数据流分析，委托到 TraverseFunctionDecl。 */
+  /* 与 call_graph 相同：使成员函数及 CXXDeductionGuideDecl 参与数据流，委托到 TraverseFunctionDecl。 */
+  bool TraverseCXXDeductionGuideDecl(CXXDeductionGuideDecl* D) { return TraverseFunctionDecl(D); }
   bool TraverseCXXMethodDecl(CXXMethodDecl* D) { return TraverseFunctionDecl(D); }
   bool TraverseCXXConstructorDecl(CXXConstructorDecl* D) { return TraverseFunctionDecl(D); }
   bool TraverseCXXDestructorDecl(CXXDestructorDecl* D) { return TraverseFunctionDecl(D); }
