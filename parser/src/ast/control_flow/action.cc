@@ -17,6 +17,7 @@
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -124,6 +125,12 @@ class ControlFlowVisitor : public RecursiveASTVisitor<ControlFlowVisitor> {
     BuildCFGForFunction(D, *ctx_, *sm_, out_);
     return true;
   }
+
+  /* RecursiveASTVisitor 对成员函数走 VisitCXXMethodDecl 等，不会走 VisitFunctionDecl，需显式委托以生成 CFG。 */
+  bool VisitCXXMethodDecl(CXXMethodDecl* D) { return VisitFunctionDecl(D); }
+  bool VisitCXXConstructorDecl(CXXConstructorDecl* D) { return VisitFunctionDecl(D); }
+  bool VisitCXXDestructorDecl(CXXDestructorDecl* D) { return VisitFunctionDecl(D); }
+  bool VisitCXXConversionDecl(CXXConversionDecl* D) { return VisitFunctionDecl(D); }
 
  private:
   ASTContext* ctx_;

@@ -15,6 +15,7 @@
 
 #ifdef CODEXRAY_HAVE_CLANG
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
@@ -71,6 +72,12 @@ class DataFlowVisitor : public RecursiveASTVisitor<DataFlowVisitor> {
     }
     return ok;
   }
+
+  /* 与 call_graph 相同：使成员函数参与数据流分析，委托到 TraverseFunctionDecl。 */
+  bool TraverseCXXMethodDecl(CXXMethodDecl* D) { return TraverseFunctionDecl(D); }
+  bool TraverseCXXConstructorDecl(CXXConstructorDecl* D) { return TraverseFunctionDecl(D); }
+  bool TraverseCXXDestructorDecl(CXXDestructorDecl* D) { return TraverseFunctionDecl(D); }
+  bool TraverseCXXConversionDecl(CXXConversionDecl* D) { return TraverseFunctionDecl(D); }
 
   bool VisitVarDecl(VarDecl* D) {
     if (!D || !out_) return true;

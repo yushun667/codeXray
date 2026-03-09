@@ -91,6 +91,13 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
     return ok;
   }
 
+  /* RecursiveASTVisitor 对 CXXMethodDecl 等会走 TraverseCXXMethodDecl，不会走 TraverseFunctionDecl，
+   * 导致成员函数未被收集。显式委托到 TraverseFunctionDecl 以记录成员函数符号与调用边。 */
+  bool TraverseCXXMethodDecl(CXXMethodDecl* D) { return TraverseFunctionDecl(D); }
+  bool TraverseCXXConstructorDecl(CXXConstructorDecl* D) { return TraverseFunctionDecl(D); }
+  bool TraverseCXXDestructorDecl(CXXDestructorDecl* D) { return TraverseFunctionDecl(D); }
+  bool TraverseCXXConversionDecl(CXXConversionDecl* D) { return TraverseFunctionDecl(D); }
+
   bool VisitCallExpr(CallExpr* E) {
     if (!E || !out_ || current_function_usr_.empty()) return true;
     CallEdgeRecord edge;
