@@ -4,10 +4,7 @@ import { ChatTab } from './ChatTab';
 import { Codicon } from '../shared/icons';
 import type { HostToSidebarMessage } from '../shared/protocol';
 import type { ParseRun } from '../shared/types';
-
-declare const acquireVsCodeApi: () => { postMessage: (msg: unknown) => void };
-
-const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+import { getVscodeApi } from '../shared/vscodeApi';
 
 export function SidebarContainer() {
   const [activeTab, setActiveTab] = useState<'parse' | 'chat'>('parse');
@@ -22,8 +19,8 @@ export function SidebarContainer() {
   const [historyRuns, setHistoryRuns] = useState<ParseRun[]>([]);
 
   useEffect(() => {
-    if (!vscode) return;
-    vscode.postMessage({ action: 'getProject' });
+    if (!getVscodeApi()) return;
+    getVscodeApi()?.postMessage({ action: 'getProject' });
   }, []);
 
   useEffect(() => {
@@ -76,10 +73,10 @@ export function SidebarContainer() {
           parseProgress={parseProgress}
           lastParseResult={lastParseResult}
           historyRuns={historyRuns}
-          onMessage={vscode?.postMessage}
+          onMessage={(msg) => getVscodeApi()?.postMessage(msg)}
         />
       )}
-      {activeTab === 'chat' && <ChatTab onMessage={vscode?.postMessage} />}
+      {activeTab === 'chat' && <ChatTab onMessage={(msg) => getVscodeApi()?.postMessage(msg)} />}
     </div>
   );
 }

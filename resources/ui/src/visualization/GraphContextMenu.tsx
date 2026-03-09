@@ -5,13 +5,10 @@
 import React from 'react';
 import type { GraphType } from '../shared/types';
 import type { FlowNodeData } from './adapters/callGraph';
-
-declare const acquireVsCodeApi: () => { postMessage: (msg: unknown) => void };
-
-const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+import { getVscodeApi } from '../shared/vscodeApi';
 
 function postToHost(msg: unknown): void {
-  vscode?.postMessage(msg);
+  getVscodeApi()?.postMessage(msg);
 }
 
 export interface GraphContextMenuProps {

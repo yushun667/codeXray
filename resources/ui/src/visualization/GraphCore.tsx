@@ -18,13 +18,10 @@ import {
 import 'reactflow/dist/style.css';
 import type { GraphToHostMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
-
-declare const acquireVsCodeApi: () => { postMessage: (msg: unknown) => void };
-
-const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+import { getVscodeApi } from '../shared/vscodeApi';
 
 function postToHost(msg: GraphToHostMessage): void {
-  vscode?.postMessage(msg);
+  getVscodeApi()?.postMessage(msg);
 }
 
 export interface GraphCoreProps {
@@ -67,7 +64,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
   );
 
   return (
-    <div style={{ width: '100%', height: '100%' }}>
+    <div style={{ width: '100%', height: '100%', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

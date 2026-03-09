@@ -17,10 +17,7 @@ import { adaptClassGraph } from './adapters/classGraph';
 import { adaptDataFlow } from './adapters/dataFlow';
 import { adaptControlFlow } from './adapters/controlFlow';
 import type { FlowNodeData } from './adapters/callGraph';
-
-declare const acquireVsCodeApi: () => { postMessage: (msg: unknown) => void };
-
-const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+import { getVscodeApi } from '../shared/vscodeApi';
 
 function adaptAndLayout(
   graphType: GraphType,
@@ -69,7 +66,7 @@ export function GraphPage() {
   }, []);
 
   useEffect(() => {
-    if (!vscode) {
+    if (!getVscodeApi()) {
       setReady(true);
       return;
     }
@@ -106,7 +103,15 @@ export function GraphPage() {
       }
     };
     window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
+    const sendReady = () => getVscodeApi()?.postMessage({ action: 'graphReady' });
+    sendReady();
+    const t1 = setTimeout(sendReady, 200);
+    const t2 = setTimeout(sendReady, 600);
+    return () => {
+      window.removeEventListener('message', handler);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [graphType, applyData]);
 
   useEffect(() => {
@@ -122,14 +127,44 @@ export function GraphPage() {
 
   if (!ready) {
     return (
-      <div className="graph-loading" style={{ padding: 16, fontFamily: 'var(--vscode-font-family)' }}>
+      <div
+        className="graph-loading"
+        style={{
+          padding: 16,
+          fontFamily: 'var(--vscode-font-family, monospace)',
+          background: 'var(--vscode-editor-background, #1e1e1e)',
+          color: 'var(--vscode-editor-foreground, #d4d4d4)',
+          minHeight: '100%',
+        }}
+      >
         加载图中…
       </div>
     );
   }
 
+  if (nodes.length === 0) {
+    return (
+      <div
+        className="graph-empty"
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--vscode-editor-background, #1e1e1e)',
+          color: 'var(--vscode-descriptionForeground, #858585)',
+          fontFamily: 'var(--vscode-font-family, monospace)',
+          fontSize: 'var(--vscode-font-size, 13px)',
+        }}
+      >
+        查询结果为空。请先解析工程，或在 C/C++ 文件中选中符号后右键「查看调用链」等。
+      </div>
+    );
+  }
+
   return (
-    <div className="graph-page" style={{ width: '100%', height: '100%', background: 'var(--vscode-editor-background)' }}>
+    <div className="graph-page" style={{ width: '100%', height: '100%', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
       <GraphCore
         nodes={nodes}
         edges={edges}
