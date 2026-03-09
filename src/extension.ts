@@ -10,8 +10,6 @@ import { ParserService } from './services/parserService';
 import { AgentService } from './services/agentService';
 import { StatusBar } from './statusBar';
 import { registerGotoSymbolCommand } from './editor/gotoSymbol';
-import { registerEditorCommands } from './editor/editorIntegration';
-import { VisualizationProvider } from './views/visualizationProvider';
 import { SidebarView } from './views/sidebarView';
 
 const log = createLogger('extension');
@@ -20,16 +18,20 @@ let config: Config;
 let parserService: ParserService;
 let agentService: AgentService;
 let statusBar: StatusBar;
-let visualizationProvider: VisualizationProvider;
 let sidebarView: SidebarView;
 
 export function activate(context: vscode.ExtensionContext): void {
   log.info('activate 开始');
 
-  config = new Config();
-  config.init(context);
-  setLogPath(config.getLogPath() ?? undefined);
-  setLogLevel(config.getLogLevel());
+  try {
+    config = new Config();
+    config.init(context);
+    setLogPath(config.getLogPath() ?? undefined);
+    setLogLevel(config.getLogLevel());
+  } catch (e) {
+    log.error('Config 初始化失败', e instanceof Error ? e.message : String(e));
+    throw e;
+  }
 
   const root = config.getWorkspaceRoot();
   const parserPath = config.getParserPath();
@@ -38,23 +40,27 @@ export function activate(context: vscode.ExtensionContext): void {
   parserService = new ParserService(config);
   agentService = new AgentService(config);
   statusBar = new StatusBar();
-  visualizationProvider = new VisualizationProvider();
   sidebarView = new SidebarView(context);
   sidebarView.setDeps({ config, parserService, agentService, statusBar });
 
+  // 必须先注册视图提供程序，否则侧边栏会报「没有可提供视图数据的已注册数据提供程序」
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('codexray.sidebar', sidebarView)
+    vscode.window.registerWebviewViewProvider('codexray.sidebar', sidebarView, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
   );
+
+  // 激活后聚焦侧边栏视图，确保 resolveWebviewView 被调用
+  void vscode.commands.executeCommand('workbench.view.extension.codexray');
 
   parserService.onProgress((percent) => {
     statusBar.updateProgress(percent);
+    sidebarView.postToWebview({ action: 'parseProgress', percent });
   });
 
   context.subscriptions.push(
     registerGotoSymbolCommand(context)
   );
-
-  registerEditorCommands(context, parserService, visualizationProvider);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('codexray.runParse', async () => {
@@ -80,12 +86,6 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codexray.openAIChat', () => {
       void vscode.commands.executeCommand('workbench.view.extension.codexray');
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('codexray.focusVisualization', () => {
-      void vscode.window.showInformationMessage('请从编辑器右键或查询命令打开可视化标签后，点击对应标签聚焦。');
     })
   );
 
@@ -121,5 +121,4 @@ export function deactivate(): void {
   parserService?.dispose();
   agentService?.dispose();
   statusBar?.dispose();
-  visualizationProvider?.dispose();
 }

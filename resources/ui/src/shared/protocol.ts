@@ -26,12 +26,6 @@ export type SidebarMessageAction =
   | 'setCompileCommandsResult'
   | 'error';
 
-// 图 UI -> host
-export type GraphAction = 'gotoSymbol' | 'queryPredecessors' | 'querySuccessors';
-
-// 图 host -> UI
-export type GraphMessageAction = 'initGraph' | 'graphAppend';
-
 export interface HostToSidebarMessage {
   action: SidebarMessageAction;
   project?: { root?: string; compileCommands?: string; databasePath?: string };
@@ -48,22 +42,4 @@ export interface HostToSidebarMessage {
 export interface SidebarToHostMessage {
   action: SidebarAction;
   payload?: { message?: string; context?: unknown; path?: string; limit?: number };
-}
-
-export interface HostToGraphMessage {
-  type: GraphMessageAction;
-  graphType?: string;
-  data?: { nodes?: unknown[]; edges?: unknown[] };
-  nodes?: unknown[];
-  edges?: unknown[];
-}
-
-export interface GraphToHostMessage {
-  action: GraphAction;
-  uri?: string;
-  line?: number;
-  column?: number;
-  graphType?: string;
-  nodeId?: string;
-  symbol?: string;
 }

@@ -11,7 +11,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         sidebar: resolve(__dirname, 'sidebar.html'),
-        graph: resolve(__dirname, 'graph.html'),
       },
     },
   },

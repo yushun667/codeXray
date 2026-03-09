@@ -11,17 +11,13 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onView:codexray.sidebar",
     "onCommand:codexray.openProject",
     "onCommand:codexray.setCompileCommands",
     "onCommand:codexray.runParse",
     "onCommand:codexray.listParseHistory",
-    "onCommand:codexray.queryCallGraph",
-    "onCommand:codexray.queryClassGraph",
-    "onCommand:codexray.queryDataFlow",
-    "onCommand:codexray.queryControlFlow",
     "onCommand:codexray.openAIChat",
-    "onCommand:codexray.focusVisualization",
     "onCommand:codexray.gotoSymbolInEditor"
   ],
   "main": "./out/extension.js",
@@ -48,28 +44,8 @@
         "title": "CodeXray: 查看历史解析记录"
       },
       {
-        "command": "codexray.queryCallGraph",
-        "title": "CodeXray: 查看调用链"
-      },
-      {
-        "command": "codexray.queryClassGraph",
-        "title": "CodeXray: 查看类关系图"
-      },
-      {
-        "command": "codexray.queryDataFlow",
-        "title": "CodeXray: 查看数据流"
-      },
-      {
-        "command": "codexray.queryControlFlow",
-        "title": "CodeXray: 查看控制流"
-      },
-      {
         "command": "codexray.openAIChat",
         "title": "CodeXray: 打开 AI 对话"
-      },
-      {
-        "command": "codexray.focusVisualization",
-        "title": "CodeXray: 聚焦到可视化标签"
       },
       {
         "command": "codexray.gotoSymbolInEditor",
@@ -89,6 +65,7 @@
     "views": {
       "codexray": [
         {
+          "type": "webview",
           "id": "codexray.sidebar",
           "name": "CodeXray"
         }
@@ -174,33 +151,12 @@
       }
     },
     "menus": {
-      "commandPalette": [],
-      "editor/context": [
-        {
-          "command": "codexray.queryCallGraph",
-          "when": "editorLangId == c || editorLangId == cpp",
-          "group": "codexray@1"
-        },
-        {
-          "command": "codexray.queryClassGraph",
-          "when": "editorLangId == c || editorLangId == cpp",
-          "group": "codexray@1"
-        },
-        {
-          "command": "codexray.queryDataFlow",
-          "when": "editorLangId == c || editorLangId == cpp",
-          "group": "codexray@1"
-        },
-        {
-          "command": "codexray.queryControlFlow",
-          "when": "editorLangId == c || editorLangId == cpp",
-          "group": "codexray@1"
-        }
-      ]
+      "commandPalette": []
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run build:ui && npm run compile",
+    "build:ui": "cd resources/ui && npm run build",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts"

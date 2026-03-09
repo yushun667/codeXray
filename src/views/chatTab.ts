@@ -4,7 +4,7 @@
  */
 
 import { createLogger } from '../logger';
-import { getCurrentSymbol } from '../editor/editorIntegration';
+import { getCurrentSymbol } from '../editor/currentSymbol';
 import type { AgentService } from '../services/agentService';
 import type { ChatContext } from '../types';
 
