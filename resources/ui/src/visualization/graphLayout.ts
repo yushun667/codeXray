@@ -7,12 +7,12 @@ import type { Node, Edge } from 'reactflow';
 import type { GraphType } from '../shared/types';
 
 const NODE_WIDTH = 300;
-/** 单节点占位高度（约 2 行文字 + 内边距；多行时节点实际高度可能更大） */
-const NODE_HEIGHT = 72;
-/** 同层节点之间的最小间隙（像素），保证不紧挨 */
-const NODE_GAP_V = 24;
+/** 单节点占位高度（约 3 行文字 + 内边距，避免多行时重叠） */
+const NODE_HEIGHT = 88;
+/** 同层节点之间的最小间隙（像素），避免重叠 */
+const NODE_GAP_V = 36;
 /** 层与层之间的最小间隙（像素） */
-const NODE_GAP_H = 32;
+const NODE_GAP_H = 48;
 /** 层间距 = 节点宽度 + 水平间隙 */
 const RANK_SEP = NODE_WIDTH + NODE_GAP_H;
 /** 同层节点垂直间距 = 占位高度 + 垂直间隙 */

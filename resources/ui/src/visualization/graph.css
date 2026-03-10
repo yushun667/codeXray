@@ -1,0 +1,15 @@
+/* 图页样式：沿用 React Flow 节点框，仅用 VSCode 主题变量覆盖颜色 */
+.react-flow__node-default {
+  background-color: var(--vscode-editor-background, #1e1e1e) !important;
+  border-color: var(--vscode-panel-border, #3c3c3c) !important;
+}
+
+.react-flow__node-default.selectable:hover {
+  box-shadow: 0 1px 4px 1px rgba(0, 0, 0, 0.15);
+}
+
+.react-flow__node-default.selectable.selected,
+.react-flow__node-default.selectable:focus,
+.react-flow__node-default.selectable:focus-visible {
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
+}

@@ -16,6 +16,7 @@ import {
   type EdgeChange,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import './graph.css';
 import type { GraphToHostMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
@@ -70,9 +71,6 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
         nodes={nodes}
         edges={edges}
         nodeTypes={{ default: GraphNode }}
-        defaultNodeOptions={{
-          style: { border: 'none', background: 'transparent', padding: 0 },
-        }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
