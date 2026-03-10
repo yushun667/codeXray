@@ -72,6 +72,10 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         onNodeContextMenu={onNodeContextMenuHandler}
+        defaultEdgeOptions={{
+          type: 'smoothstep',
+          pathOptions: { borderRadius: 14 },
+        }}
         nodesSelectable
         nodesDraggable
         elementsSelectable

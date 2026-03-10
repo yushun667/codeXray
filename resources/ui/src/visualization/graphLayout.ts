@@ -1,5 +1,6 @@
 /**
- * 双向树状布局：以根节点为中心，前驱在左、后继在右，同层节点对齐（同一 x，y 等距居中）
+ * 双向树状布局：以根节点为中心，前驱在左、后继在右，同层节点对齐；
+ * 间距保证节点、边与边、边与节点不重叠（RANK_SEP >= NODE_WIDTH，NODE_SEP >= NODE_HEIGHT），并做重叠微调。
  */
 
 import type { Node, Edge } from 'reactflow';
@@ -7,8 +8,10 @@ import type { GraphType } from '../shared/types';
 
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 36;
-const RANK_SEP = 80;
-const NODE_SEP = 48;
+/** 层间距 >= 节点宽度，避免节点与跨层边重叠 */
+const RANK_SEP = Math.max(200, NODE_WIDTH + 24);
+/** 同层节点垂直间距 >= 节点高度，避免节点重叠 */
+const NODE_SEP = Math.max(48, NODE_HEIGHT + 12);
 
 /** 从边列表构建邻接：前驱 = 有边指向该节点的源；后继 = 该节点指向的目标 */
 function buildAdjacency(edges: Edge[]) {
