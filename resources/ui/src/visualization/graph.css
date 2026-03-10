@@ -1,7 +1,8 @@
-/* 图页样式：节点框使用与画布区分开的背景与边框，便于辨认 */
+/* 图页样式：节点背景 rgb(81,154,186)，文字纯白，多行显示由 GraphNode 控制 */
 .react-flow__node-default {
-  background-color: var(--vscode-editorWidget-background, #252526) !important;
-  border: 1px solid var(--vscode-input-border, #3c3c3c) !important;
+  background-color: rgb(81, 154, 186) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  color: #fff !important;
 }
 
 .react-flow__node-default.selectable:hover {

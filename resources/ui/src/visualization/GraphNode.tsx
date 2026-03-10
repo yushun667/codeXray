@@ -28,7 +28,7 @@ export function GraphNode({ data }: NodeProps) {
           wordBreak: 'break-word',
           overflowWrap: 'break-word',
           boxSizing: 'border-box',
-          color: 'var(--vscode-editor-foreground, #d4d4d4)',
+          color: '#fff',
           fontSize: 'var(--vscode-font-size, 13px)',
           fontFamily: 'var(--vscode-font-family, monospace)',
         }}
