@@ -70,6 +70,9 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
         nodes={nodes}
         edges={edges}
         nodeTypes={{ default: GraphNode }}
+        defaultNodeOptions={{
+          style: { border: 'none', background: 'transparent', padding: 0 },
+        }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
