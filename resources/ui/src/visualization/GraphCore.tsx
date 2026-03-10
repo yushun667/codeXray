@@ -19,6 +19,7 @@ import 'reactflow/dist/style.css';
 import type { GraphToHostMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
+import { GraphNode } from './GraphNode';
 
 function postToHost(msg: GraphToHostMessage): void {
   getVscodeApi()?.postMessage(msg);
@@ -68,6 +69,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        nodeTypes={{ default: GraphNode }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}

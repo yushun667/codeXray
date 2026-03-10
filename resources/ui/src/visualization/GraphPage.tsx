@@ -19,10 +19,26 @@ import { adaptControlFlow } from './adapters/controlFlow';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
 
+/** 边数量上限，避免数万条边导致渲染卡死；同 (source,target) 仅保留一条 */
+const MAX_EDGES = 2500;
+
+function limitEdges(edges: Edge[]): Edge[] {
+  const seen = new Set<string>();
+  const out: Edge[] = [];
+  for (const e of edges) {
+    const key = `${e.source}\t${e.target}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...e, id: out.length ? `e-${e.source}-${e.target}-${out.length}` : e.id });
+    if (out.length >= MAX_EDGES) break;
+  }
+  return out;
+}
+
 function adaptAndLayout(
   graphType: GraphType,
   data: GraphData
-): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
+): { nodes: Node<FlowNodeData>[]; edges: Edge[]; edgesTruncated?: number } {
   let nodes: Node<FlowNodeData>[];
   let edges: Edge[];
   switch (graphType) {
@@ -42,10 +58,13 @@ function adaptAndLayout(
       nodes = [];
       edges = [];
   }
+  const originalCount = edges.length;
+  edges = limitEdges(edges);
+  const edgesTruncated = originalCount > edges.length ? originalCount : undefined;
   if (nodes.length > 0) {
     nodes = getLayoutedElements(nodes, edges, graphType);
   }
-  return { nodes, edges };
+  return { nodes, edges, edgesTruncated };
 }
 
 export function GraphPage() {
@@ -59,10 +78,13 @@ export function GraphPage() {
     y: number;
   } | null>(null);
 
+  const [edgesTruncated, setEdgesTruncated] = useState<number | null>(null);
+
   const applyData = useCallback((type: GraphType, data: GraphData) => {
-    const { nodes: n, edges: e } = adaptAndLayout(type, data);
+    const { nodes: n, edges: e, edgesTruncated: truncated } = adaptAndLayout(type, data);
     setNodes(n);
     setEdges(e);
+    setEdgesTruncated(truncated ?? null);
   }, []);
 
   useEffect(() => {
@@ -110,11 +132,13 @@ export function GraphPage() {
               appendFlowNodes,
               appendFlowEdges
             );
-            const laid = getLayoutedElements(mergedN, mergedE, graphType);
+            const limitedE = limitEdges(mergedE);
+            if (mergedE.length > limitedE.length) setEdgesTruncated(mergedE.length);
+            const laid = getLayoutedElements(mergedN, limitedE, graphType);
             queueMicrotask(() => {
               setNodes(laid);
             });
-            return mergedE;
+            return limitedE;
           });
           return cur;
         });
@@ -182,14 +206,29 @@ export function GraphPage() {
   }
 
   return (
-    <div className="graph-page" style={{ width: '100%', height: '100%', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
-      <GraphCore
-        nodes={nodes}
-        edges={edges}
-        setNodes={setNodes}
-        setEdges={setEdges}
-        onNodeContextMenu={(node, ev) => setContextMenu({ node, x: ev.clientX, y: ev.clientY })}
-      />
+    <div className="graph-page" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+      {edgesTruncated != null && (
+        <div
+          style={{
+            flexShrink: 0,
+            padding: '4px 10px',
+            fontSize: 12,
+            color: 'var(--vscode-descriptionForeground, #858585)',
+            background: 'var(--vscode-editor-inactiveSelectionBackground, #2a2a2a)',
+          }}
+        >
+          边数量较多，已按节点对去重并仅展示前 {MAX_EDGES} 条（原始约 {edgesTruncated} 条），以保持流畅。
+        </div>
+      )}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <GraphCore
+          nodes={nodes}
+          edges={edges}
+          setNodes={setNodes}
+          setEdges={setEdges}
+          onNodeContextMenu={(node, ev) => setContextMenu({ node, x: ev.clientX, y: ev.clientY })}
+        />
+      </div>
       {contextMenu && (
         <GraphContextMenu
           graphType={graphType}

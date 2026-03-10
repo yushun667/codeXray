@@ -6,8 +6,8 @@
 import type { Node, Edge } from 'reactflow';
 import type { GraphType } from '../shared/types';
 
-const NODE_WIDTH = 180;
-const NODE_HEIGHT = 36;
+const NODE_WIDTH = 300;
+const NODE_HEIGHT = 44;
 /** 层间距 >= 节点宽度，避免节点与跨层边重叠 */
 const RANK_SEP = Math.max(200, NODE_WIDTH + 24);
 /** 同层节点垂直间距 >= 节点高度，避免节点重叠 */
