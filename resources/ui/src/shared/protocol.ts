@@ -64,7 +64,7 @@ export interface GraphToHostMessage {
 }
 
 /** host -> 图 */
-export type HostToGraphAction = 'initGraph' | 'graphAppend';
+export type HostToGraphAction = 'initGraph' | 'graphAppend' | 'exportGraph';
 
 export interface HostToGraphMessage {
   action: HostToGraphAction;
@@ -73,4 +73,10 @@ export interface HostToGraphMessage {
   /** initGraph / graphAppend */
   nodes?: unknown[];
   edges?: unknown[];
+}
+
+/** 图 -> host：导出图数据（JSON 可序列化，用于动态渲染） */
+export interface GraphExportPayload {
+  nodes: Array<{ id: string; type: string; data: { label: string }; position: { x: number; y: number } }>;
+  edges: Array<{ id: string; source: string; target: string }>;
 }

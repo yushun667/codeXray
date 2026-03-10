@@ -36,7 +36,7 @@ export function adaptCallGraph(data: GraphData): { nodes: Node<FlowNodeData>[]; 
   apiNodes.forEach((n: ApiNode, i: number) => {
     nodes.push({
       id: n.id ?? `n${i}`,
-      type: 'default',
+      type: 'customNode',
       position: { x: 0, y: 0 },
       data: {
         label: nodeLabel(n),

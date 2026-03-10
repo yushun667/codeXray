@@ -1,16 +1,14 @@
-/* 图页样式：节点背景 rgb(81,154,186)，文字纯白，多行显示由 GraphNode 控制 */
-.react-flow__node-default {
-  background-color: rgb(81, 154, 186) !important;
-  border: 1px solid rgba(255, 255, 255, 0.25) !important;
-  color: #fff !important;
+/* 自定义节点由 CustomNode 组件内联样式绘制，此处仅保证无多余内边距 */
+.react-flow__node-customNode {
+  padding: 0;
 }
 
-.react-flow__node-default.selectable:hover {
+.react-flow__node-customNode.selectable:hover {
   box-shadow: 0 1px 4px 1px rgba(0, 0, 0, 0.15);
 }
 
-.react-flow__node-default.selectable.selected,
-.react-flow__node-default.selectable:focus,
-.react-flow__node-default.selectable:focus-visible {
+.react-flow__node-customNode.selectable.selected,
+.react-flow__node-customNode.selectable:focus,
+.react-flow__node-customNode.selectable:focus-visible {
   box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
 }

@@ -20,7 +20,7 @@ import './graph.css';
 import type { GraphToHostMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
-import { GraphNode } from './GraphNode';
+import { CustomNode } from './CustomNode';
 
 function postToHost(msg: GraphToHostMessage): void {
   getVscodeApi()?.postMessage(msg);
@@ -70,7 +70,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={{ default: GraphNode }}
+        nodeTypes={{ customNode: CustomNode }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
@@ -78,6 +78,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
         defaultEdgeOptions={{
           type: 'smoothstep',
           pathOptions: { borderRadius: 14 },
+          animated: true,
         }}
         nodesSelectable
         nodesDraggable

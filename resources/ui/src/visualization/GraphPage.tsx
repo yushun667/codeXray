@@ -3,11 +3,11 @@
  * 接收 graphAppend 时 merge + layout 后更新。与主仓库通过 postMessage 通信。
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Node, Edge } from 'reactflow';
 import type { GraphType, GraphData } from '../shared/types';
 import type { HostToGraphMessage } from '../shared/protocol';
-import { getLayoutedElements } from './graphLayout';
+import { getLayoutedElementsDagre } from './dagreLayout';
 import { mergeGraph } from './graphMerge';
 import type { Node as RFNode } from 'reactflow';
 import { GraphCore } from './GraphCore';
@@ -62,7 +62,7 @@ function adaptAndLayout(
   edges = limitEdges(edges);
   const edgesTruncated = originalCount > edges.length ? originalCount : undefined;
   if (nodes.length > 0) {
-    nodes = getLayoutedElements(nodes, edges, graphType);
+    nodes = getLayoutedElementsDagre(nodes, edges, 'LR');
   }
   return { nodes, edges, edgesTruncated };
 }
@@ -79,13 +79,36 @@ export function GraphPage() {
   } | null>(null);
 
   const [edgesTruncated, setEdgesTruncated] = useState<number | null>(null);
+  const nodesRef = useRef<Node<FlowNodeData>[]>([]);
+  const edgesRef = useRef<Edge[]>([]);
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
 
-  const applyData = useCallback((type: GraphType, data: GraphData) => {
-    const { nodes: n, edges: e, edgesTruncated: truncated } = adaptAndLayout(type, data);
-    setNodes(n);
-    setEdges(e);
-    setEdgesTruncated(truncated ?? null);
+  const handleNodeDimensions = useCallback((id: string, w: number, h: number) => {
+    setNodes((prev) => {
+      const withSize = prev.map((n) => (n.id === id ? { ...n, width: w, height: h } : n));
+      return getLayoutedElementsDagre(withSize, edgesRef.current);
+    });
   }, []);
+
+  const injectOnDimensions = useCallback(
+    (nodeList: Node<FlowNodeData>[]) =>
+      nodeList.map((n) => ({
+        ...n,
+        data: { ...n.data, onDimensions: handleNodeDimensions },
+      })),
+    [handleNodeDimensions]
+  );
+
+  const applyData = useCallback(
+    (type: GraphType, data: GraphData) => {
+      const { nodes: n, edges: e, edgesTruncated: truncated } = adaptAndLayout(type, data);
+      setEdges(e);
+      setNodes(injectOnDimensions(n));
+      setEdgesTruncated(truncated ?? null);
+    },
+    [injectOnDimensions]
+  );
 
   useEffect(() => {
     if (!getVscodeApi()) {
@@ -95,6 +118,21 @@ export function GraphPage() {
     const handler = (event: MessageEvent<HostToGraphMessage>) => {
       const m = event.data;
       if (!m || typeof m !== 'object' || !m.action) return;
+      if (m.action === 'exportGraph') {
+        const currentNodes = nodesRef.current;
+        const currentEdges = edgesRef.current;
+        const payload = {
+          nodes: currentNodes.map((n) => ({
+            id: n.id,
+            type: n.type,
+            data: { label: (n.data as FlowNodeData)?.label },
+            position: n.position,
+          })),
+          edges: currentEdges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+        };
+        getVscodeApi()?.postMessage({ action: 'graphExported', payload });
+        return;
+      }
       if (m.action === 'initGraph') {
         const type = (m.graphType as GraphType) ?? 'call_graph';
         setGraphType(type);
@@ -134,9 +172,9 @@ export function GraphPage() {
             );
             const limitedE = limitEdges(mergedE);
             if (mergedE.length > limitedE.length) setEdgesTruncated(mergedE.length);
-            const laid = getLayoutedElements(mergedN, limitedE, graphType);
+            const laid = getLayoutedElementsDagre(mergedN, limitedE, 'LR');
             queueMicrotask(() => {
-              setNodes(laid);
+              setNodes(injectOnDimensions(laid));
             });
             return limitedE;
           });

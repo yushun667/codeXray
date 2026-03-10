@@ -6,7 +6,8 @@
 import { Handle, Position, type NodeProps } from 'reactflow';
 import type { FlowNodeData } from './adapters/callGraph';
 
-const MIN_WIDTH = 120;
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 360;
 const LINE_HEIGHT = 1.35;
 
 export function GraphNode({ data }: NodeProps) {
@@ -19,6 +20,7 @@ export function GraphNode({ data }: NodeProps) {
         title={label}
         style={{
           minWidth: MIN_WIDTH,
+          maxWidth: MAX_WIDTH,
           width: 'max-content',
           lineHeight: LINE_HEIGHT,
           textAlign: 'center',
