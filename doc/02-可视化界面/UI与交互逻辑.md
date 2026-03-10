@@ -15,7 +15,60 @@
 | **查询主入口** | **代码编辑区** | 在编辑器内对符号（函数/类/变量等）右键或命令触发查询，在编辑区新标签打开可视化；**必须支持可视化与代码互相交互**（见第 3、3.1 节） |
 | 解析进度（**百分比**）、错误、Agent 状态、DB 路径等 | **状态栏**（解析进度必须在此显示**百分比**）、设置页 | 本地/远程状态可区分显示 |
 
-### 1.1 按钮与图标规范
+### 1.1 所有 UI 元素清单（按位置与组件）
+
+以下为当前实现中出现的**全部 UI 元素**，按所在视图与组件归类。
+
+#### 侧边栏（SidebarContainer + 双标签）
+
+| 元素 | 所在组件 | 类型 | 说明 |
+|------|----------|------|------|
+| 标签「解析管理」 | SidebarContainer | 按钮（Tab） | 带 Codicon `project`，点击切换至解析管理面板 |
+| 标签「AI 对话」 | SidebarContainer | 按钮（Tab） | 带 Codicon `comment-discussion`，点击切换至 AI 对话面板 |
+
+**解析管理标签页（ParseTab）**
+
+| 元素 | 类型 | 说明 |
+|------|------|------|
+| 工程路径 | 只读文本 | 显示当前工程根路径，无工作区时显示「(无工作区)」 |
+| 按钮「解析」 | 按钮 | Codicon `play`，触发 `runParse`；解析进行中时禁用 |
+| 按钮「历史」 | 按钮 | Codicon `history`，触发 `listParseHistory` |
+| 解析进度条/文案 | 文本 | 解析中时显示「解析中… N%」 |
+| 最近解析结果摘要 | 文本 | 解析结束后显示「最近: N 个文件, M 失败」或「解析失败: …」 |
+| 历史解析记录列表 | 列表 | 每项显示 run_id、started_at、mode、status；无记录时显示「无记录」 |
+
+**AI 对话标签页（ChatTab）**
+
+| 元素 | 类型 | 说明 |
+|------|------|------|
+| 消息列表 | 可滚动区域 | 用户消息与助手消息气泡，内容以 Markdown 渲染（react-markdown + remark-gfm） |
+| 流式回复占位 | 消息气泡 | 回复未完成时显示当前已收到的流式内容 |
+| 按钮「引用当前符号」 | 按钮 | Codicon `symbol-reference`，触发 `getContext`，可将当前符号填入输入框 |
+| 输入框 | textarea | 多行（rows=3），placeholder「输入消息…」，Enter 发送、Shift+Enter 换行 |
+| 按钮「发送」 | 按钮 | Codicon `send`，发送当前输入内容 |
+
+#### 编辑区 · 图视图（GraphPage + GraphCore）
+
+| 元素 | 所在组件 | 类型 | 说明 |
+|------|----------|------|------|
+| 加载中占位 | GraphPage | 整页文案 | 未 ready 时显示「加载图中…」 |
+| 空结果占位 | GraphPage | 整页文案 | 无节点时显示「查询结果为空。请先解析工程，或在 C/C++ 文件中选中符号后右键「查看调用链」等。」 |
+| 边数截断提示条 | GraphPage | 顶部横幅 | 边数超过 2500 时显示「边数量较多，已按节点对去重并仅展示前 2500 条（原始约 N 条），以保持流畅。」 |
+| 画布 | GraphCore | ReactFlow 容器 | 节点、边、缩放平移、框选、拖拽；背景网格（Background） |
+| 缩放/适应控件 | GraphCore | Controls | React Flow 自带：缩放、适应视图等 |
+| 图节点 | GraphCore | 自定义节点 GraphNode | 左侧 Handle（target）、右侧 Handle（source）；框内多行显示 label，悬停 title 显示全文；点击节点 postMessage(gotoSymbol) 跳转代码 |
+| 边 | GraphCore | 边 | smoothstep 折线、圆角；同 (source,target) 去重，总数上限 2500 |
+| 节点右键菜单 | GraphContextMenu | 浮层菜单 | 固定在鼠标位置；项「继续查询前置节点」「继续查询后置节点」 |
+
+#### 主仓库 · 状态栏（非 Webview）
+
+| 元素 | 所在模块 | 说明 |
+|------|----------|------|
+| CodeXray 状态栏项 | src/statusBar.ts | 解析中显示进度百分比；完成/失败时显示对应状态；可隐藏 |
+
+以上为可视化相关界面中的**全部 UI 元素**；与主仓库的对接（postMessage、命令、右键菜单等）见本文档第 2–5 节。
+
+### 1.2 按钮与图标规范
 
 - **所有按钮均使用 VSCode 图标作为按钮图标**，与编辑器风格一致。
 - 实现时使用 VSCode 扩展 API 提供的 **Codicon**（如 `vscode.Codicon`）或 **ThemeIcon**（`vscode.ThemeIcon`），不使用自定义图片、外部图标库或 emoji 作为按钮图标。
