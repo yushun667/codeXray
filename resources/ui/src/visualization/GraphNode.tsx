@@ -1,27 +1,42 @@
 /**
- * 图节点：仅提供内容与 Handle，节点框由 React Flow 外层容器提供（type=default 时带 .react-flow__node-default）。
- * 名称多行居中，无内层边框，避免出现“名称框叠在节点框上”的双框。
+ * 图节点：最大宽度 200px，高度根据文字内容自适应（ref 测 scrollHeight），
+ * 多行居中显示；支持显式换行 \n；拖拽 cursor grab。
  */
 
+import { useEffect, useRef, useState } from 'react';
 import { Handle, Position, type NodeProps } from 'reactflow';
 import type { FlowNodeData } from './adapters/callGraph';
 
-const MIN_WIDTH = 200;
-const MAX_WIDTH = 360;
+const MAX_WIDTH = 200;
 const LINE_HEIGHT = 1.35;
+const PADDING = 8;
 
 export function GraphNode({ data }: NodeProps) {
   const label = (data as FlowNodeData)?.label ?? '';
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | 'auto'>('auto');
+
+  useEffect(() => {
+    if (ref.current) {
+      const h = ref.current.scrollHeight;
+      setHeight(h);
+    }
+  }, [label]);
+
+  const lines = label.split('\n').filter(Boolean);
+  const displayLines = lines.length > 0 ? lines : [label || ''];
+
   return (
     <>
       <Handle type="target" position={Position.Left} />
-      {/* 仅做文本布局，不加边框/背景；节点框由父级 .react-flow__node-default 提供 */}
       <div
+        ref={ref}
         title={label}
         style={{
-          minWidth: MIN_WIDTH,
           maxWidth: MAX_WIDTH,
           width: 'max-content',
+          minHeight: typeof height === 'number' ? height : undefined,
+          padding: PADDING,
           lineHeight: LINE_HEIGHT,
           textAlign: 'center',
           whiteSpace: 'normal',
@@ -31,9 +46,12 @@ export function GraphNode({ data }: NodeProps) {
           color: '#fff',
           fontSize: 'var(--vscode-font-size, 13px)',
           fontFamily: 'var(--vscode-font-family, monospace)',
+          cursor: 'grab',
         }}
       >
-        {label}
+        {displayLines.map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
       </div>
       <Handle type="source" position={Position.Right} />
     </>
