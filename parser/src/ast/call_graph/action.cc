@@ -17,6 +17,7 @@
 #ifdef CODEXRAY_HAVE_CLANG
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
@@ -110,9 +111,14 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
 
     const Expr* calleeExpr = E->getCallee()->IgnoreParenImpCasts();
     const FunctionDecl* callee = nullptr;
-    if (const auto* dre = dyn_cast<DeclRefExpr>(calleeExpr)) {
-      if (const auto* fd = dyn_cast_or_null<FunctionDecl>(dre->getDecl()))
-        callee = fd;
+    if (const auto* memCall = dyn_cast<CXXMemberCallExpr>(E)) {
+      callee = memCall->getMethodDecl();
+    }
+    if (!callee) {
+      if (const auto* dre = dyn_cast<DeclRefExpr>(calleeExpr)) {
+        if (const auto* fd = dyn_cast_or_null<FunctionDecl>(dre->getDecl()))
+          callee = fd;
+      }
     }
     if (callee) {
       edge.callee_usr = GetUSR(callee);
