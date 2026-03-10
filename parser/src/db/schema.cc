@@ -24,7 +24,7 @@ static bool RunStatements(sqlite3* db, const std::string& sql) {
 }
 
 /** 当前 schema 版本，递增以触发迁移 */
-static const int kCurrentSchemaVersion = 2;
+static const int kCurrentSchemaVersion = 3;
 
 /** 获取已存储的 schema 版本，无表或无行返回 0 */
 static int GetSchemaVersion(sqlite3* db) {
@@ -72,6 +72,27 @@ static void MigrateParseRunFilesFailed(sqlite3* db) {
   if (r != SQLITE_OK && err && std::strstr(err, "duplicate") == nullptr)
     LogError("schema migration parse_run.files_failed: %s", err);
   if (err) sqlite3_free(err);
+}
+
+/** call_edge.edge_type 扩展：支持 constructor/destructor/virtual/cuda_kernel（SQLite 无法 ALTER CHECK，故重建表） */
+static void MigrateCallEdgeEdgeType(sqlite3* db) {
+  if (!RunStatements(db,
+      "CREATE TABLE IF NOT EXISTS call_edge_new ("
+      "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+      "caller_id INTEGER NOT NULL REFERENCES symbol(id),"
+      "callee_id INTEGER NOT NULL REFERENCES symbol(id),"
+      "call_site_file_id INTEGER NOT NULL REFERENCES file(id),"
+      "call_site_line INTEGER NOT NULL,"
+      "call_site_column INTEGER NOT NULL,"
+      "edge_type TEXT NOT NULL CHECK(edge_type IN ('direct','via_function_pointer','constructor','destructor','virtual','cuda_kernel'))"
+      ")"))
+    return;
+  RunStatements(db, "INSERT INTO call_edge_new SELECT * FROM call_edge");
+  RunStatements(db, "DROP TABLE call_edge");
+  RunStatements(db, "ALTER TABLE call_edge_new RENAME TO call_edge");
+  RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_call_edge_caller_callee ON call_edge(caller_id, callee_id)");
+  RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_call_edge_site ON call_edge(call_site_file_id, call_site_line, call_site_column)");
+  RunStatements(db, "CREATE INDEX IF NOT EXISTS idx_call_edge_type ON call_edge(edge_type)");
 }
 
 bool EnsureSchema(sqlite3* db) {
@@ -139,7 +160,7 @@ CREATE TABLE IF NOT EXISTS call_edge (
   call_site_file_id INTEGER NOT NULL REFERENCES file(id),
   call_site_line INTEGER NOT NULL,
   call_site_column INTEGER NOT NULL,
-  edge_type TEXT NOT NULL CHECK(edge_type IN ('direct','via_function_pointer'))
+  edge_type TEXT NOT NULL CHECK(edge_type IN ('direct','via_function_pointer','constructor','destructor','virtual','cuda_kernel'))
 );
 CREATE INDEX IF NOT EXISTS idx_call_edge_caller_callee ON call_edge(caller_id, callee_id);
 CREATE INDEX IF NOT EXISTS idx_call_edge_site ON call_edge(call_site_file_id, call_site_line, call_site_column);
@@ -239,6 +260,11 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edge_from_to ON cfg_edge(from_node_id, to_nod
     MigrateParseRunFilesFailed(db);
     SetSchemaVersion(db, 2);
     LogInfo("EnsureSchema: migrated to version 2 (parse_run.files_failed)");
+  }
+  if (ver < 3) {
+    MigrateCallEdgeEdgeType(db);
+    SetSchemaVersion(db, 3);
+    LogInfo("EnsureSchema: migrated to version 3 (call_edge.edge_type constructor/destructor/virtual/cuda_kernel)");
   }
   if (ver < kCurrentSchemaVersion)
     LogInfo("EnsureSchema: current schema version %d", kCurrentSchemaVersion);

@@ -44,7 +44,7 @@ struct CallEdgeRecord {
   int64_t call_site_file_id = 0;
   int call_site_line = 0;
   int call_site_column = 0;
-  std::string edge_type;  // "direct" | "via_function_pointer"
+  std::string edge_type;  // "direct" | "via_function_pointer" | "constructor" | "destructor" | "virtual" | "cuda_kernel"
 };
 
 class DBWriter {

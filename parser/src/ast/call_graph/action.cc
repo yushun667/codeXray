@@ -113,6 +113,10 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
     const FunctionDecl* callee = nullptr;
     if (const auto* memCall = dyn_cast<CXXMemberCallExpr>(E)) {
       callee = memCall->getMethodDecl();
+      if (callee && isa<CXXDestructorDecl>(callee))
+        edge.edge_type = "destructor";
+      else if (callee && dyn_cast<CXXMethodDecl>(callee) && cast<CXXMethodDecl>(callee)->isVirtual())
+        edge.edge_type = "virtual";
     }
     if (!callee) {
       if (const auto* dre = dyn_cast<DeclRefExpr>(calleeExpr)) {
@@ -120,7 +124,11 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
           callee = fd;
       }
     }
+    if (!callee && E->getDirectCallee())
+      callee = E->getDirectCallee();
     if (callee) {
+      if (isa<CUDAKernelCallExpr>(E))
+        edge.edge_type = "cuda_kernel";
       edge.callee_usr = GetUSR(callee);
       if (!edge.callee_usr.empty())
         out_->edges.push_back(std::move(edge));
@@ -134,6 +142,22 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
       e2.callee_usr = usr;
       out_->edges.push_back(std::move(e2));
     }
+    return true;
+  }
+
+  bool VisitCXXConstructExpr(CXXConstructExpr* E) {
+    if (!E || !out_ || current_function_usr_.empty()) return true;
+    const CXXConstructorDecl* ctor = E->getConstructor();
+    if (!ctor) return true;
+    CallEdgeRecord edge;
+    edge.caller_usr = current_function_usr_;
+    edge.callee_usr = GetUSR(ctor);
+    edge.edge_type = "constructor";
+    SourceLocation loc = E->getBeginLoc();
+    edge.call_site_line = GetLine(*sm_, loc);
+    edge.call_site_column = GetColumn(*sm_, loc);
+    if (!edge.callee_usr.empty())
+      out_->edges.push_back(std::move(edge));
     return true;
   }
 
