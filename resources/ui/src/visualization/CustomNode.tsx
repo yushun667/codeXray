@@ -97,8 +97,9 @@ export function CustomNode({ id, data }: NodeProps<FlowNodeData>) {
         >
           {label}
         </div>
-        {/* 可见多行居中文字 */}
+        {/* 可见多行居中文字；nodrag 使点击触发 onNodeClick 而非拖拽 */}
         <div
+          className="nodrag"
           title={label}
           style={{
             width: '100%',

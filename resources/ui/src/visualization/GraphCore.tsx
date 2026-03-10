@@ -7,6 +7,7 @@ import {
   ReactFlow,
   Controls,
   Background,
+  Panel,
   applyNodeChanges,
   applyEdgeChanges,
   type Node,
@@ -58,12 +59,22 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
   }, []);
 
   const onNodeContextMenuHandler: NodeMouseHandler = useCallback(
-    (_, node, event) => {
+    (event: React.MouseEvent, node: Node<FlowNodeData>) => {
       event.preventDefault();
-      onNodeContextMenu?.(node, event as unknown as React.MouseEvent);
+      event.stopPropagation();
+      onNodeContextMenu?.(node, event);
     },
     [onNodeContextMenu]
   );
+
+  const onPaneContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const onDeleteSelected = useCallback(() => {
+    setNodes((nds) => nds.filter((n) => !n.selected));
+    setEdges((eds) => eds.filter((e) => !e.selected));
+  }, [setNodes, setEdges]);
 
   return (
     <div style={{ width: '100%', height: '100%', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
@@ -75,15 +86,19 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         onNodeContextMenu={onNodeContextMenuHandler}
-        defaultEdgeOptions={{
-          type: 'smoothstep',
-          pathOptions: { borderRadius: 14 },
-          animated: true,
-        }}
-        nodesSelectable
+        onPaneContextMenu={onPaneContextMenu}
+        defaultEdgeOptions={
+          {
+            type: 'smoothstep',
+            pathOptions: { borderRadius: 14 },
+            animated: true,
+          } as import('reactflow').DefaultEdgeOptions
+        }
         nodesDraggable
         elementsSelectable
-        panOnDrag
+        panOnDrag={[1, 2]}
+        selectionOnDrag
+        deleteKeyCode={['Backspace', 'Delete']}
         zoomOnScroll
         zoomOnPinch
         fitView
@@ -93,6 +108,23 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
       >
         <Controls />
         <Background />
+        <Panel position="top-right">
+          <button
+            type="button"
+            onClick={onDeleteSelected}
+            style={{
+              padding: '4px 10px',
+              fontSize: 12,
+              cursor: 'pointer',
+              background: 'var(--vscode-button-background)',
+              color: 'var(--vscode-button-foreground)',
+              border: '1px solid var(--vscode-button-border)',
+              borderRadius: 4,
+            }}
+          >
+            删除选中
+          </button>
+        </Panel>
       </ReactFlow>
     </div>
   );
