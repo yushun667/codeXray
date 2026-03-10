@@ -1,17 +1,22 @@
 /**
  * 双向树状布局：以根节点为中心，前驱在左、后继在右，同层节点对齐；
- * 间距保证节点、边与边、边与节点不重叠（RANK_SEP >= NODE_WIDTH，NODE_SEP >= NODE_HEIGHT），并做重叠微调。
+ * 节点间保留间距（不紧挨），层间距与同层间距均含余量。
  */
 
 import type { Node, Edge } from 'reactflow';
 import type { GraphType } from '../shared/types';
 
 const NODE_WIDTH = 300;
-const NODE_HEIGHT = 44;
-/** 层间距 >= 节点宽度，避免节点与跨层边重叠 */
-const RANK_SEP = Math.max(200, NODE_WIDTH + 24);
-/** 同层节点垂直间距 >= 节点高度，避免节点重叠 */
-const NODE_SEP = Math.max(48, NODE_HEIGHT + 12);
+/** 单节点占位高度（约 2 行文字 + 内边距；多行时节点实际高度可能更大） */
+const NODE_HEIGHT = 72;
+/** 同层节点之间的最小间隙（像素），保证不紧挨 */
+const NODE_GAP_V = 24;
+/** 层与层之间的最小间隙（像素） */
+const NODE_GAP_H = 32;
+/** 层间距 = 节点宽度 + 水平间隙 */
+const RANK_SEP = NODE_WIDTH + NODE_GAP_H;
+/** 同层节点垂直间距 = 占位高度 + 垂直间隙 */
+const NODE_SEP = NODE_HEIGHT + NODE_GAP_V;
 
 /** 从边列表构建邻接：前驱 = 有边指向该节点的源；后继 = 该节点指向的目标 */
 function buildAdjacency(edges: Edge[]) {
