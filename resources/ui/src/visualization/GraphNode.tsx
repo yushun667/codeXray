@@ -1,16 +1,13 @@
 /**
- * 图节点：使用 React Flow 默认节点框（.react-flow__node-default），
- * 名称多行居中显示，节点框高度随内容适应。
+ * 图节点：仅提供内容与 Handle，节点框由 React Flow 外层容器提供（type=default 时带 .react-flow__node-default）。
+ * 名称多行居中，无内层边框，避免出现“名称框叠在节点框上”的双框。
  */
 
-import React from 'react';
 import { Handle, Position, type NodeProps } from 'reactflow';
 import type { FlowNodeData } from './adapters/callGraph';
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 360;
-const PADDING_V = 10;
-const PADDING_H = 12;
 const LINE_HEIGHT = 1.35;
 
 export function GraphNode({ data }: NodeProps) {
@@ -18,14 +15,13 @@ export function GraphNode({ data }: NodeProps) {
   return (
     <>
       <Handle type="target" position={Position.Left} />
+      {/* 仅做文本布局，不加边框/背景；节点框由父级 .react-flow__node-default 提供 */}
       <div
-        className="react-flow__node-default"
         title={label}
         style={{
           minWidth: MIN_WIDTH,
           maxWidth: MAX_WIDTH,
           width: 'max-content',
-          padding: `${PADDING_V}px ${PADDING_H}px`,
           lineHeight: LINE_HEIGHT,
           textAlign: 'center',
           whiteSpace: 'normal',
