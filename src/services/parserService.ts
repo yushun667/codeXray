@@ -193,7 +193,7 @@ export class ParserService {
     }
     args.push('--parallel', String(opts.parallelism));
     if (type === 'call_graph') {
-      const depth = typeof options.depth === 'number' && options.depth > 0 ? options.depth : this._config.getQueryDepth();
+      const depth = typeof options.depth === 'number' && options.depth > 0 ? options.depth : this.config.getQueryDepth();
       args.push('--depth', String(depth));
     }
     if (options.symbol) args.push('--symbol', options.symbol);
