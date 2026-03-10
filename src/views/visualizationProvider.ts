@@ -92,7 +92,7 @@ export class VisualizationProvider {
         const symbol = msg.symbol ?? '';
         const file = msg.file ?? '';
         this._deps.parserService
-          .query(graphType, { symbol, file, depth: 3 })
+          .query(graphType, { symbol, file })
           .then((appendData) => {
             if (this._panel?.webview && (appendData.nodes?.length || appendData.edges?.length)) {
               this._panel.webview.postMessage({

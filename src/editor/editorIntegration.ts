@@ -43,8 +43,10 @@ export function registerEditorCommands(
       const data = await deps.parserService.query(type, {
         symbol: sym.name,
         file: sym.file,
-        depth: 3,
       });
+      const nodeCount = data.nodes?.length ?? 0;
+      const edgeCount = data.edges?.length ?? 0;
+      log.info('查询结果', { type, nodes: nodeCount, edges: edgeCount });
       deps.visualizationProvider.openGraph(type, data);
     });
     disposables.push(d);

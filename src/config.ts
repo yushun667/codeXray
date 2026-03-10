@@ -71,6 +71,13 @@ export class Config {
     return this._context.asAbsolutePath(path.join('bin', base));
   }
 
+  /** 图查询默认深度（调用链/类关系等），1–10，默认 2 */
+  getQueryDepth(): number {
+    const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    const d = cfg.get<number>('queryDepth') ?? 2;
+    return Math.max(1, Math.min(10, Math.floor(d)));
+  }
+
   /** 解析选项：并行度、懒解析、优先目录、增量 */
   getParserOptions(): ParserOptions {
     const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);

@@ -193,7 +193,7 @@ export class ParserService {
     }
     args.push('--parallel', String(opts.parallelism));
     if (type === 'call_graph') {
-      const depth = typeof options.depth === 'number' && options.depth > 0 ? options.depth : 3;
+      const depth = typeof options.depth === 'number' && options.depth > 0 ? options.depth : this._config.getQueryDepth();
       args.push('--depth', String(depth));
     }
     if (options.symbol) args.push('--symbol', options.symbol);
@@ -225,6 +225,13 @@ export class ParserService {
           }
           try {
             const data = JSON.parse(stdout.trim() || '{}') as GraphData;
+            const nodeCount = data.nodes?.length ?? 0;
+            const edgeCount = data.edges?.length ?? 0;
+            log.info('query 结果', {
+              nodes: nodeCount,
+              edges: edgeCount,
+              nodeIds: data.nodes?.slice(0, 5).map((n) => n.id ?? n.name) ?? [],
+            });
             resolve(data);
           } catch {
             log.warn('query 输出非 JSON');

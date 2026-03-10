@@ -9,8 +9,6 @@
     "copy-codicons": "node scripts/copy-codicons.cjs"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^2.0.0",
-    "@dagrejs/graphlib": "^3.0.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",
@@ -18,7 +16,6 @@
     "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
-    "@types/dagre": "^0.7.52",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.0",

@@ -127,6 +127,13 @@
           "default": true,
           "description": "默认使用增量更新解析"
         },
+        "codexray.queryDepth": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2,
+          "description": "调用链/类关系等图查询的默认展开深度（层数）"
+        },
         "codexray.agentEndpoint": {
           "type": "string",
           "default": "",
