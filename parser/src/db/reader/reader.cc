@@ -39,6 +39,8 @@ static std::string FilePath(sqlite3* db, int64_t fid,
 }
 
 // Resolve symbol by USR or name, return DB id
+// 策略：1. USR 精确匹配；2. name + def_file_id JOIN；
+//       3. name + USR 包含文件名 fallback（处理 def_file_id 为 NULL 的情况）
 static int64_t ResolveSymbolId(sqlite3* db,
                                 const std::string& usr_or_name,
                                 const std::string& file_path) {
@@ -53,15 +55,43 @@ static int64_t ResolveSymbolId(sqlite3* db,
     sqlite3_finalize(s);
     if (id) return id;
   }
-  // Try by name + optional file filter
-  const char* sql = file_path.empty()
-      ? "SELECT s.id FROM symbol s WHERE s.name=? LIMIT 1"
-      : "SELECT s.id FROM symbol s JOIN file f ON s.def_file_id=f.id"
-        " WHERE s.name=? AND f.path LIKE ? LIMIT 1";
+  // Try by name + file (via def_file_id JOIN)
+  if (!file_path.empty()) {
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT s.id FROM symbol s JOIN file f ON s.def_file_id=f.id"
+        " WHERE s.name=? AND f.path LIKE ? LIMIT 1", -1, &s, nullptr);
+    BindText(s, 1, usr_or_name);
+    BindText(s, 2, "%" + file_path + "%");
+    int64_t id = 0;
+    if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    if (id) return id;
+
+    // Fallback: def_file_id 为 NULL 时，通过 USR 中包含的文件名匹配
+    // 许多匿名命名空间的方法其 USR 以文件名开头（如 "c:IntrinsicEmitter.cpp@..."）
+    // 提取 file_path 的基本文件名用于 LIKE 匹配 USR
+    std::string basename = file_path;
+    auto pos = basename.rfind('/');
+    if (pos != std::string::npos) basename = basename.substr(pos + 1);
+    if (!basename.empty()) {
+      sqlite3_stmt* s2 = nullptr;
+      sqlite3_prepare_v2(db,
+          "SELECT id FROM symbol WHERE name=? AND usr LIKE ? LIMIT 1",
+          -1, &s2, nullptr);
+      BindText(s2, 1, usr_or_name);
+      BindText(s2, 2, "%" + basename + "%");
+      int64_t id2 = 0;
+      if (sqlite3_step(s2) == SQLITE_ROW) id2 = sqlite3_column_int64(s2, 0);
+      sqlite3_finalize(s2);
+      if (id2) return id2;
+    }
+  }
+  // No file filter, just match by name
   sqlite3_stmt* s = nullptr;
-  sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+  sqlite3_prepare_v2(db, "SELECT s.id FROM symbol s WHERE s.name=? LIMIT 1",
+                     -1, &s, nullptr);
   BindText(s, 1, usr_or_name);
-  if (!file_path.empty()) BindText(s, 2, "%" + file_path + "%");
   int64_t id = 0;
   if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
   sqlite3_finalize(s);
