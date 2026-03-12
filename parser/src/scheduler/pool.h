@@ -3,8 +3,17 @@
  * 设计 §3.4 / §5.6。
  * 默认并行度 = max(1, 系统 CPU 核心数 - 2)（接口约定 §2.1 / 模块功能说明 1.4）。
  *
- * 隔离机制：每个 TU 通过 fork+exec 在独立子进程运行（codexray-parser parse-tu），
- * 子进程 abort/crash 不影响父进程，超时后被 SIGKILL。
+ * 默认架构（Pre-fork Worker Pool + Protobuf IPC）：
+ *   - 启动前 fork+exec N 个长驻 "parse-tu-worker" 子进程
+ *   - 每线程独占一个 worker，通过 Protobuf 二进制帧通信（ipc_proto.h）
+ *   - Worker crash 时自动 fork 替代进程，保持故障隔离
+ *   - 相比旧模式减少 ~99% 的 exec 开销（N 次 vs TU 数量次）
+ *
+ * 旧架构（CODEXRAY_LEGACY_FORK=1 环境变量激活）：
+ *   - 每个 TU 通过 fork+exec 在独立子进程运行（codexray-parser parse-tu）
+ *   - 通过 JSON 通信（nlohmann::json），用于调试和对比测试
+ *
+ * 两种架构共同保证：子进程 abort/crash 不影响父进程，超时后被 SIGKILL。
  */
 #pragma once
 #include "compile_commands/load.h"

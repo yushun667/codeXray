@@ -1,0 +1,145 @@
+// CodeXray IPC Protobuf 定义
+// Pre-fork Worker Pool 的父子进程通信协议。
+// 父进程通过管道发送 WorkerRequest（TU 信息），
+// Worker 返回 WorkerResponse（分析结果）。
+// 帧格式：[4 bytes uint32_t LE 长度][N bytes protobuf 数据]
+syntax = "proto3";
+
+package codexray.ipc;
+
+// ── 请求：父进程 → Worker ─────────────────────────────────────────
+// 对应 compile_commands/load.h 中的 TUEntry 结构体
+message WorkerRequest {
+  string source_file      = 1;  // 源文件绝对路径
+  string directory         = 2;  // 编译工作目录
+  repeated string arguments = 3;  // 编译参数列表
+}
+
+// ── 响应：Worker → 父进程 ─────────────────────────────────────────
+// 对应 common/analysis_output.h 中的 CombinedOutput 结构体
+message WorkerResponse {
+  bool   ok                   = 1;   // 分析是否成功
+  string error                = 2;   // 失败时的错误信息
+
+  // 源文件元数据（Worker 计算，避免父进程重复读文件）
+  int64  source_file_mtime    = 3;
+  string source_file_hash     = 4;
+
+  // 分析结果
+  repeated PbSymbolRow       symbols         = 10;
+  repeated PbCallEdgeRow     call_edges      = 11;
+  repeated PbClassRow        classes         = 12;
+  repeated PbClassRelationRow class_relations = 13;
+  repeated PbClassMemberRow  class_members   = 14;
+  repeated PbGlobalVarRow    global_vars     = 15;
+  repeated PbDataFlowEdgeRow data_flow_edges = 16;
+  repeated PbCfgNodeRow      cfg_nodes       = 17;
+  repeated PbCfgEdgeRow      cfg_edges       = 18;
+  repeated string            referenced_files = 19;
+}
+
+// ── 子消息：1:1 映射 analysis_output.h 结构体 ─────────────────────
+
+// 符号行（对应 SymbolRow）
+message PbSymbolRow {
+  string usr            = 1;
+  string name           = 2;
+  string qualified_name = 3;
+  string kind           = 4;
+  string def_file_path  = 5;
+  int64  def_file_id    = 6;
+  int32  def_line       = 7;
+  int32  def_column     = 8;
+  int32  def_line_end   = 9;
+  int32  def_col_end    = 10;
+  string decl_file_path = 11;
+  int64  decl_file_id   = 12;
+  int32  decl_line      = 13;
+  int32  decl_column    = 14;
+  int32  decl_line_end  = 15;
+  int32  decl_col_end   = 16;
+}
+
+// 调用边（对应 CallEdgeRow）
+message PbCallEdgeRow {
+  string caller_usr     = 1;
+  string callee_usr     = 2;
+  string edge_type      = 3;
+  string call_file_path = 4;
+  int64  call_file_id   = 5;
+  int32  call_line      = 6;
+  int32  call_column    = 7;
+}
+
+// 类信息（对应 ClassRow）
+message PbClassRow {
+  string usr            = 1;
+  string name           = 2;
+  string qualified_name = 3;
+  string def_file_path  = 4;
+  int64  def_file_id    = 5;
+  int32  def_line       = 6;
+  int32  def_column     = 7;
+  int32  def_line_end   = 8;
+  int32  def_col_end    = 9;
+}
+
+// 类关系（对应 ClassRelationRow）
+message PbClassRelationRow {
+  string parent_usr    = 1;
+  string child_usr     = 2;
+  string relation_type = 3;
+}
+
+// 类成员（对应 ClassMemberRow）
+message PbClassMemberRow {
+  string class_usr       = 1;
+  string member_usr      = 2;
+  string member_name     = 3;
+  string member_type_str = 4;
+}
+
+// 全局变量（对应 GlobalVarRow）
+message PbGlobalVarRow {
+  string usr            = 1;
+  string name           = 2;
+  string qualified_name = 3;
+  string def_file_path  = 4;
+  int64  def_file_id    = 5;
+  int32  def_line       = 6;
+  int32  def_column     = 7;
+  int32  def_line_end   = 8;
+  int32  def_col_end    = 9;
+}
+
+// 数据流边（对应 DataFlowEdgeRow）
+message PbDataFlowEdgeRow {
+  string var_usr          = 1;
+  string accessor_usr     = 2;
+  string access_type      = 3;
+  string access_file_path = 4;
+  int64  access_file_id   = 5;
+  int32  access_line      = 6;
+  int32  access_column    = 7;
+}
+
+// 控制流节点（对应 CfgNodeRow）
+message PbCfgNodeRow {
+  string function_usr = 1;
+  int32  block_id     = 2;
+  string file_path    = 3;
+  int64  file_id      = 4;
+  int32  begin_line   = 5;
+  int32  begin_col    = 6;
+  int32  end_line     = 7;
+  int32  end_col      = 8;
+  string label        = 9;
+}
+
+// 控制流边（对应 CfgEdgeRow）
+message PbCfgEdgeRow {
+  string function_usr = 1;
+  int32  from_block   = 2;
+  int32  to_block     = 3;
+  string edge_type    = 4;
+}

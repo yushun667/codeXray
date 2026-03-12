@@ -1,4 +1,17 @@
+/**
+ * 线程池调度器实现。
+ *
+ * 新架构（默认）：Pre-fork Worker Pool
+ *   - 启动前 fork+exec N 个长驻 "parse-tu-worker" 子进程
+ *   - 每线程独占一个 worker，通过 Protobuf 二进制帧通信
+ *   - Worker crash 时自动 fork 替代，保持故障隔离
+ *
+ * 旧架构（CODEXRAY_LEGACY_FORK=1）：
+ *   - 每个 TU fork+exec 一个 "parse-tu" 子进程
+ *   - 通过 JSON 通信（nlohmann::json）
+ */
 #include "pool.h"
+#include "ipc_proto.h"
 #include "../common/logger.h"
 #include "../common/clang_include_detector.h"
 #include <atomic>
@@ -16,19 +29,21 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <cstring>
+#include <cstdlib>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
 
 namespace codexray {
 
+/// 返回默认并行度：max(1, cores-2)
 unsigned DefaultParallelism() {
   unsigned cores = std::thread::hardware_concurrency();
   if (cores <= 2) return 1;
   return cores - 2;
 }
 
-// ─── TUEntry 序列化/反序列化 ─────────────────────────────────────────────────
+// ─── TUEntry JSON 序列化/反序列化（供 parse-tu debug 子命令使用）──────────────
 
 nlohmann::json SerializeTUEntry(const TUEntry& tu) {
   nlohmann::json j;
@@ -51,7 +66,7 @@ TUEntry DeserializeTUEntry(const nlohmann::json& j) {
   return tu;
 }
 
-// ─── CombinedOutput 序列化/反序列化（JSON，通过管道传输）────────────────────
+// ─── CombinedOutput JSON 序列化/反序列化（供 parse-tu debug 子命令使用）──────
 
 nlohmann::json SerializeCombinedOutput(const CombinedOutput& o) {
   using json = nlohmann::json;
@@ -140,8 +155,6 @@ nlohmann::json SerializeCombinedOutput(const CombinedOutput& o) {
   }
 
   j["referenced_files"] = o.referenced_files;
-
-  // 源文件元数据（子进程计算，避免父进程重复读文件）
   j["source_file_mtime"] = o.source_file_mtime;
   j["source_file_hash"]  = o.source_file_hash;
   return j;
@@ -248,7 +261,6 @@ void DeserializeCombinedOutput(const nlohmann::json& j, CombinedOutput& o) {
     for (const auto& x : j["referenced_files"])
       if (x.is_string()) o.referenced_files.push_back(x.get<std::string>());
   }
-  // 源文件元数据
   if (j.contains("source_file_mtime") && j["source_file_mtime"].is_number())
     o.source_file_mtime = j["source_file_mtime"].get<int64_t>();
   if (j.contains("source_file_hash") && j["source_file_hash"].is_string())
@@ -269,12 +281,12 @@ static std::string GetSelfPath() {
   return {};
 }
 
-// ─── fork+exec 隔离运行单个 TU ───────────────────────────────────────────────
-// 使用 fork+exec 在全新子进程中运行 parse-tu 子命令。
-// 全新子进程没有 LLVM 全局状态，不会死锁。
-// 子进程通过 stdin 接收 TUEntry JSON，通过 stdout 输出结果 JSON。
-// 超时后 SIGKILL 子进程。
+// ═══════════════════════════════════════════════════════════════════════════════
+// 旧架构：fork+exec per TU + JSON IPC（CODEXRAY_LEGACY_FORK=1 时使用）
+// ═══════════════════════════════════════════════════════════════════════════════
 
+/// fork+exec 隔离运行单个 TU（旧模式，每 TU 一个进程）
+/// 使用 JSON 通信，通过 parse-tu 子命令
 static bool RunOneTUForked(
     const TUEntry& tu,
     CombinedOutput& out,
@@ -301,7 +313,6 @@ static bool RunOneTUForked(
     // ── 子进程 ──────────────────────────────────────────────────────────
     dup2(stdin_pipe[0],  STDIN_FILENO);
     dup2(stdout_pipe[1], STDOUT_FILENO);
-    // 关闭 stderr 中的多余 fd，保留 2 (stderr) 用于调试
     close(stdin_pipe[0]);  close(stdin_pipe[1]);
     close(stdout_pipe[0]); close(stdout_pipe[1]);
 
@@ -341,12 +352,10 @@ static bool RunOneTUForked(
     char buf[65536];
 
     while (polls < max_polls) {
-      // 读取可用数据
       ssize_t n;
       while ((n = read(stdout_pipe[0], buf, sizeof(buf))) > 0)
         result_buf.append(buf, n);
 
-      // 检查子进程
       pid_t r = waitpid(pid, &child_status, WNOHANG);
       if (r == pid) { exited = true; break; }
       if (r < 0)    { exited = true; break; }
@@ -360,7 +369,6 @@ static bool RunOneTUForked(
       kill(pid, SIGKILL);
       waitpid(pid, &child_status, 0);
     } else {
-      // 读取剩余输出
       ssize_t n;
       while ((n = read(stdout_pipe[0], buf, sizeof(buf))) > 0)
         result_buf.append(buf, n);
@@ -393,12 +401,10 @@ static bool RunOneTUForked(
   }
 }
 
-// ─── RunScheduled ────────────────────────────────────────────────────────────
-
-RunResult RunScheduled(
+/// 旧模式 RunScheduled（每 TU fork+exec + JSON）
+static RunResult RunScheduledLegacy(
     const std::vector<TUEntry>& tu_list,
     const SchedulerConfig& cfg,
-    std::function<bool(const TUEntry&, CombinedOutput&)> /*run_one*/,
     ProgressCallback progress,
     ResultCallback on_result) {
 
@@ -412,8 +418,7 @@ RunResult RunScheduled(
     return {};
   }
 
-  // 父进程预先探测 Clang 系统 include 路径，通过环境变量传递给 fork+exec 子进程，
-  // 避免每个子进程重复运行 clang++ 子进程探测（2935 TU × 2 次 popen → 0 次）。
+  // 设置环境变量供子进程继承
   {
     const auto& inc_env = GetClangIncludeEnv();
     std::string serialized = SerializeClangIncludeEnv(inc_env);
@@ -421,7 +426,6 @@ RunResult RunScheduled(
   }
 
   RunResult result;
-  // 仅在无 on_result 回调时预分配输出数组（兼容旧接口）
   if (!on_result) result.outputs.resize(total);
 
   std::mutex q_mu;
@@ -430,8 +434,8 @@ RunResult RunScheduled(
 
   std::atomic<size_t> done_count{0};
   std::atomic<int>    failed{0};
-  std::mutex          result_mu;   // 保护 on_result 回调（串行写 DB）
-  std::mutex          progress_mu; // 保护 progress 回调
+  std::mutex          result_mu;
+  std::mutex          progress_mu;
 
   std::vector<std::thread> workers;
   workers.reserve(par);
@@ -448,15 +452,11 @@ RunResult RunScheduled(
         const TUEntry& tu = tu_list[idx];
         CombinedOutput out;
         bool ok = RunOneTUForked(tu, out, self_path);
-        if (!ok) {
-          failed.fetch_add(1);
-        }
-        // 调用结果回调（加锁保证串行，回调内可写 DB）
+        if (!ok) failed.fetch_add(1);
         if (on_result) {
           std::lock_guard<std::mutex> lk(result_mu);
           on_result(tu, out, ok);
         } else if (ok) {
-          // 兼容旧接口：存入 outputs 数组
           result.outputs[idx] = std::move(out);
         }
         size_t d = done_count.fetch_add(1) + 1;
@@ -470,9 +470,275 @@ RunResult RunScheduled(
   for (auto& w : workers) w.join();
 
   result.failed_count = failed.load();
-  LogInfo("Scheduler done: " + std::to_string(total - result.failed_count) +
+  LogInfo("Scheduler (legacy) done: " + std::to_string(total - result.failed_count) +
           "/" + std::to_string(total) + " succeeded");
   return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 新架构：Pre-fork Worker Pool + Protobuf IPC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Worker 进程句柄
+struct WorkerProcess {
+  pid_t pid      = -1;   // Worker 进程 PID
+  int   write_fd = -1;   // 父→子 stdin 管道（写端）
+  int   read_fd  = -1;   // 子→父 stdout 管道（读端）
+};
+
+/// fork+exec 一个 parse-tu-worker 子进程
+/// @param self_path 当前可执行文件路径
+/// @return WorkerProcess，pid=-1 表示失败
+static WorkerProcess ForkOneWorker(const std::string& self_path) {
+  WorkerProcess w;
+
+  int parent_to_child[2];  // 父写 → 子读 (stdin)
+  int child_to_parent[2];  // 子写 → 父读 (stdout)
+
+  if (pipe(parent_to_child) != 0 || pipe(child_to_parent) != 0) {
+    LogError("ForkOneWorker: pipe() failed");
+    return w;
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    LogError("ForkOneWorker: fork() failed");
+    close(parent_to_child[0]); close(parent_to_child[1]);
+    close(child_to_parent[0]); close(child_to_parent[1]);
+    return w;
+  }
+
+  if (pid == 0) {
+    // ── 子进程 ──────────────────────────────────────────────────────────
+    dup2(parent_to_child[0], STDIN_FILENO);
+    dup2(child_to_parent[1], STDOUT_FILENO);
+    close(parent_to_child[0]); close(parent_to_child[1]);
+    close(child_to_parent[0]); close(child_to_parent[1]);
+
+    execl(self_path.c_str(), self_path.c_str(), "parse-tu-worker", nullptr);
+    _exit(127);  // exec 失败
+  }
+
+  // ── 父进程 ────────────────────────────────────────────────────────────
+  close(parent_to_child[0]);  // 关闭子侧读端
+  close(child_to_parent[1]);  // 关闭子侧写端
+
+  w.pid = pid;
+  w.write_fd = parent_to_child[1];
+  w.read_fd = child_to_parent[0];
+  return w;
+}
+
+/// 关闭 Worker 子进程
+/// @param w Worker 进程句柄
+/// @param timeout_secs 等待退出的超时秒数
+static void ShutdownWorker(WorkerProcess& w, int timeout_secs = 5) {
+  if (w.pid <= 0) return;
+
+  // 关闭写端 → worker 的 ReadFrame 返回 EOF → worker 正常退出
+  if (w.write_fd >= 0) {
+    close(w.write_fd);
+    w.write_fd = -1;
+  }
+
+  // 等待子进程退出（带超时）
+  int status = 0;
+  for (int i = 0; i < timeout_secs * 10; ++i) {
+    pid_t r = waitpid(w.pid, &status, WNOHANG);
+    if (r == w.pid || r < 0) goto done;
+    usleep(100000);  // 100ms
+  }
+  // 超时 → 强制 kill
+  kill(w.pid, SIGKILL);
+  waitpid(w.pid, &status, 0);
+
+done:
+  if (w.read_fd >= 0) {
+    close(w.read_fd);
+    w.read_fd = -1;
+  }
+  w.pid = -1;
+}
+
+/// 新模式 RunScheduled（Pre-fork Worker Pool + Protobuf IPC）
+static RunResult RunScheduledPreFork(
+    const std::vector<TUEntry>& tu_list,
+    const SchedulerConfig& cfg,
+    ProgressCallback progress,
+    ResultCallback on_result) {
+
+  unsigned par = cfg.parallel > 0 ? cfg.parallel : DefaultParallelism();
+  const size_t total = tu_list.size();
+  if (total == 0) return {};
+
+  std::string self_path = GetSelfPath();
+  if (self_path.empty()) {
+    LogError("Cannot determine self executable path for pre-fork workers");
+    return {};
+  }
+
+  // 父进程预先探测 Clang 系统 include 路径，通过环境变量传递给子进程
+  {
+    const auto& inc_env = GetClangIncludeEnv();
+    std::string serialized = SerializeClangIncludeEnv(inc_env);
+    setenv("CODEXRAY_CLANG_INCLUDE_ENV", serialized.c_str(), 1);
+  }
+
+  // ── 主线程：Pre-fork N 个 worker（单线程上下文，fork+exec 安全）──────
+  std::vector<WorkerProcess> worker_procs(par);
+  for (unsigned i = 0; i < par; ++i) {
+    worker_procs[i] = ForkOneWorker(self_path);
+    if (worker_procs[i].pid <= 0) {
+      LogError("Failed to fork worker " + std::to_string(i));
+      // 清理已 fork 的 workers
+      for (unsigned j = 0; j < i; ++j) ShutdownWorker(worker_procs[j]);
+      return {};
+    }
+  }
+  LogInfo("Pre-forked " + std::to_string(par) + " workers");
+
+  RunResult result;
+  if (!on_result) result.outputs.resize(total);
+
+  // 任务队列
+  std::mutex q_mu;
+  std::queue<size_t> task_queue;
+  for (size_t i = 0; i < total; ++i) task_queue.push(i);
+
+  std::atomic<size_t> done_count{0};
+  std::atomic<int>    failed{0};
+  std::mutex          result_mu;   // 保护 on_result 回调
+  std::mutex          progress_mu; // 保护 progress 回调
+
+  const int timeout_secs = 120;
+
+  // ── 启动 N 个线程，每线程独占一个 worker ────────────────────────────
+  std::vector<std::thread> threads;
+  threads.reserve(par);
+  for (unsigned t = 0; t < par; ++t) {
+    threads.emplace_back([&, t] {
+      WorkerProcess& w = worker_procs[t];
+
+      while (true) {
+        // 从队列取任务
+        size_t idx;
+        {
+          std::lock_guard<std::mutex> lk(q_mu);
+          if (task_queue.empty()) break;
+          idx = task_queue.front();
+          task_queue.pop();
+        }
+        const TUEntry& tu = tu_list[idx];
+        CombinedOutput out;
+        bool ok = false;
+
+        // 发送请求
+        std::string req_data = SerializeTURequestPb(tu);
+        if (!WriteFrame(w.write_fd, req_data)) {
+          // Worker 已死（EPIPE）→ 尝试恢复
+          LogWarn("Worker write failed on TU: " + tu.source_file);
+          goto crash_recovery;
+        }
+
+        // 读取响应
+        {
+          std::string resp_data;
+          bool timed_out = false;
+          if (!ReadFrame(w.read_fd, resp_data, timeout_secs, timed_out)) {
+            if (timed_out) {
+              LogWarn("Worker timed out (" + std::to_string(timeout_secs) +
+                      "s) on TU: " + tu.source_file);
+              // 超时 → kill worker
+              kill(w.pid, SIGKILL);
+            } else {
+              LogWarn("Worker crashed on TU: " + tu.source_file);
+            }
+            goto crash_recovery;
+          }
+
+          // 反序列化响应
+          std::string resp_error;
+          if (!DeserializeWorkerResponsePb(resp_data, out, ok, resp_error)) {
+            LogError("Worker response deserialization failed on TU: " + tu.source_file);
+            goto crash_recovery;
+          }
+          if (!ok) {
+            LogWarn("Worker analysis failed [" + resp_error + "]: " + tu.source_file);
+          }
+        }
+
+        // 正常路径
+        goto handle_result;
+
+      crash_recovery:
+        {
+          // 回收僵尸
+          int status = 0;
+          waitpid(w.pid, &status, 0);
+          if (WIFSIGNALED(status)) {
+            LogWarn("Worker killed by signal " +
+                    std::to_string(WTERMSIG(status)));
+          }
+          // fork 替代 worker（fork+exec 在多线程下安全，因为 exec 紧跟 fork）
+          w = ForkOneWorker(self_path);
+          if (w.pid <= 0) {
+            LogError("Failed to fork replacement worker, aborting remaining TUs");
+            failed.fetch_add(1);
+            break;  // 无法恢复，退出线程
+          }
+          ok = false;
+        }
+
+      handle_result:
+        if (!ok) failed.fetch_add(1);
+
+        if (on_result) {
+          std::lock_guard<std::mutex> lk(result_mu);
+          on_result(tu, out, ok);
+        } else if (ok) {
+          result.outputs[idx] = std::move(out);
+        }
+
+        size_t d = done_count.fetch_add(1) + 1;
+        if (progress) {
+          std::lock_guard<std::mutex> lk(progress_mu);
+          progress(d, total, tu.source_file);
+        }
+      }
+    });
+  }
+
+  // 等待所有线程完成
+  for (auto& th : threads) th.join();
+
+  // ── 优雅关闭所有 worker ────────────────────────────────────────────
+  for (auto& w : worker_procs) ShutdownWorker(w);
+
+  result.failed_count = failed.load();
+  LogInfo("Scheduler (pre-fork) done: " + std::to_string(total - result.failed_count) +
+          "/" + std::to_string(total) + " succeeded");
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 公共入口：根据环境变量选择架构
+// ═══════════════════════════════════════════════════════════════════════════════
+
+RunResult RunScheduled(
+    const std::vector<TUEntry>& tu_list,
+    const SchedulerConfig& cfg,
+    std::function<bool(const TUEntry&, CombinedOutput&)> /*run_one*/,
+    ProgressCallback progress,
+    ResultCallback on_result) {
+
+  // CODEXRAY_LEGACY_FORK=1 → 回退到旧模式（每 TU fork+exec + JSON）
+  const char* legacy = std::getenv("CODEXRAY_LEGACY_FORK");
+  if (legacy && legacy[0] == '1') {
+    LogInfo("Using legacy fork+exec+JSON mode (CODEXRAY_LEGACY_FORK=1)");
+    return RunScheduledLegacy(tu_list, cfg, progress, on_result);
+  }
+
+  return RunScheduledPreFork(tu_list, cfg, progress, on_result);
 }
 
 }  // namespace codexray

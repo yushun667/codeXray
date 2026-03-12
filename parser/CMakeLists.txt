@@ -79,6 +79,7 @@ add_executable(codexray-parser
   src/history/history.cc
   src/incremental/incremental.cc
   src/scheduler/pool.cc
+  src/scheduler/ipc_proto.cc
   src/ast/call_graph/action.cc
   src/ast/function_pointer/analyzer.cc
   src/ast/class_relation/action.cc

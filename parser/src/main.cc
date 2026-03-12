@@ -1,7 +1,7 @@
 /**
  * CodeXray 解析引擎入口
  * 子命令：parse / query / list-runs；退出码见接口约定 §4
- * 隐藏子命令：parse-tu（供 pool.cc fork+exec 调用，不面向用户）
+ * 隐藏子命令：parse-tu（JSON 模式，供调试）、parse-tu-worker（Protobuf 帧模式，供 Pre-fork Worker Pool）
  */
 
 #include "cli/parse_args.h"
@@ -18,10 +18,12 @@
 #include "common/analysis_output.h"
 #include "compile_commands/load.h"
 #include "incremental/incremental.h"
+#include "scheduler/ipc_proto.h"
 #include <filesystem>
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <unistd.h>
 #include <nlohmann/json.hpp>
 
 namespace {
@@ -97,6 +99,42 @@ int main(int argc, char* argv[]) {
       std::cout << err.dump() << std::flush;
       return 1;
     }
+  }
+
+  // ── parse-tu-worker（隐藏子命令，由 Pre-fork Worker Pool 调用）─────────────
+  // 长驻循环：从 stdin 读取 Protobuf 帧（WorkerRequest），分析后将
+  // WorkerResponse 帧写入 stdout。父进程关闭 stdin 管道时退出。
+  if (cmd == "parse-tu-worker") {
+    codexray::LogInit("", false);
+    while (true) {
+      std::string frame;
+      bool timed_out = false;
+      // timeout_secs=0 → 无限等待下一个请求
+      if (!codexray::ReadFrame(STDIN_FILENO, frame, 0, timed_out))
+        break;  // EOF → 父进程关闭了 write_fd → 正常退出
+
+      codexray::TUEntry tu;
+      if (!codexray::DeserializeTURequestPb(frame, tu)) {
+        // 请求解析失败，发送错误响应并继续等待
+        codexray::CombinedOutput empty;
+        auto resp = codexray::SerializeWorkerResponsePb(empty, false, "bad request");
+        codexray::WriteFrame(STDOUT_FILENO, resp);
+        continue;
+      }
+
+      codexray::CombinedOutput out;
+      bool ok = codexray::combined::RunAllAnalysesOnTU(tu, out);
+      if (ok) {
+        // 在 Worker 中计算源文件 mtime 和 hash，避免父进程重复读文件
+        out.source_file_mtime = codexray::GetFileMtime(tu.source_file);
+        out.source_file_hash  = codexray::ComputeFileHash(tu.source_file);
+      }
+      auto resp = codexray::SerializeWorkerResponsePb(
+          out, ok, ok ? "" : "analysis failed");
+      if (!codexray::WriteFrame(STDOUT_FILENO, resp))
+        break;  // 父进程关闭了读端 → 退出
+    }
+    return 0;
   }
 
   if (cmd == "-h" || cmd == "--help") {
