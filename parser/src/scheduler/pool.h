@@ -1,33 +1,65 @@
 /**
- * 解析引擎调度：线程池、TU 队列、进度回调
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.4、接口约定 2.1 --parallel
+ * 线程池调度器：并行执行 TU 分析任务。
+ * 设计 §3.4 / §5.6。
+ * 默认并行度 = max(1, 系统 CPU 核心数 - 2)（接口约定 §2.1 / 模块功能说明 1.4）。
+ *
+ * 隔离机制：每个 TU 通过 fork+exec 在独立子进程运行（codexray-parser parse-tu），
+ * 子进程 abort/crash 不影响父进程，超时后被 SIGKILL。
  */
-
-#ifndef CODEXRAY_PARSER_SCHEDULER_POOL_H_
-#define CODEXRAY_PARSER_SCHEDULER_POOL_H_
-
-#include <cstddef>
+#pragma once
+#include "compile_commands/load.h"
+#include "common/analysis_output.h"
 #include <functional>
+#include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace codexray {
 
-struct TUEntry;
+using ProgressCallback = std::function<void(size_t done, size_t total,
+                                             const std::string& current_file)>;
 
-/** 进度回调：done 已完成数，total 总数，current_file 刚完成的 TU 源文件路径（可为空） */
-using ProgressCallback = std::function<void(size_t done, size_t total, const std::string& current_file)>;
-/** 处理单个 TU，返回是否成功；由 driver 注入（如运行 Clang FrontendAction） */
-using TUProcessor = std::function<bool(const TUEntry&)>;
+struct SchedulerConfig {
+  unsigned parallel = 0;  // 0 = auto (max(1, cores-2))
+};
 
 /**
- * 使用线程池并行处理 TU 列表，阻塞直到全部完成。
- * parallel 为线程数；processor 为单 TU 处理函数（可空则仅计数）；每完成一个 TU 调用 on_progress(done, total)。
+ * 每完成一个 TU 的回调：(tu, output, ok)。
+ * 若 ok==false，output 为空；调用方可在回调内立即写库并释放内存，
+ * 避免大型项目（如 llvm-project）将所有结果累积在内存中导致 OOM。
+ * 回调在调度线程内串行（持有内部锁），不得执行耗时操作。
  */
-void RunTUPool(const std::vector<TUEntry>& tus,
-               unsigned parallel,
-               TUProcessor processor,
-               ProgressCallback on_progress);
+using ResultCallback = std::function<void(const TUEntry&, CombinedOutput&, bool ok)>;
+
+/**
+ * 并行执行 tu_list 中的每个 TU，使用 fork+exec 隔离。
+ * 每完成一个 TU：
+ *   - 若 on_result 非空，则调用 on_result(tu, output, ok)
+ *   - 若 progress 非空，则调用 progress(done, total, file)
+ * outputs 字段保留兼容性，当 on_result 非空时不填充（节省内存）。
+ * 失败的 TU 记录警告并跳过，不中止其他 TU。
+ */
+struct RunResult {
+  std::vector<CombinedOutput> outputs;  // 仅 on_result==nullptr 时填充
+  int failed_count = 0;
+};
+
+RunResult RunScheduled(
+    const std::vector<TUEntry>& tu_list,
+    const SchedulerConfig& cfg,
+    std::function<bool(const TUEntry&, CombinedOutput&)> run_one,
+    ProgressCallback progress = nullptr,
+    ResultCallback on_result = nullptr);
+
+// 返回默认并行度：max(1, cores-2)
+unsigned DefaultParallelism();
+
+// CombinedOutput 序列化/反序列化（供 parse-tu 子命令使用）
+nlohmann::json SerializeCombinedOutput(const CombinedOutput& o);
+void DeserializeCombinedOutput(const nlohmann::json& j, CombinedOutput& o);
+
+// TUEntry 序列化/反序列化（供 parse-tu 子命令使用）
+nlohmann::json SerializeTUEntry(const TUEntry& tu);
+TUEntry DeserializeTUEntry(const nlohmann::json& j);
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_SCHEDULER_POOL_H_

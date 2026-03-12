@@ -1,221 +1,149 @@
-/**
- * 解析引擎 AST：控制流 CFG
- * 无 Clang 时占位；有 Clang 时对每个函数构建 CFG，输出基本块节点与边。
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.9
- */
-
-#include "ast/control_flow/action.h"
-#include "compile_commands/load.h"
-#include "common/clang_include_detector.h"
-#include "common/logger.h"
-#include "common/path_util.h"
-#include <string>
-#include <vector>
+#include "action.h"
 
 #ifdef CODEXRAY_HAVE_CLANG
-#include "clang/Analysis/CFG.h"
-#include "clang/Tooling/ArgumentsAdjusters.h"
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/Decl.h"
-#include "clang/AST/DeclCXX.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/Basic/SourceLocation.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "clang/Frontend/FrontendAction.h"
-#include "clang/Index/USRGeneration.h"
-#include "clang/Tooling/CompilationDatabase.h"
-#include "clang/Tooling/Tooling.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringRef.h"
-#include <memory>
-#endif
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/Analysis/CFG.h>
+#include <clang/Index/USRGeneration.h>
+#include <clang/Basic/SourceManager.h>
+#include <llvm/ADT/SmallString.h>
+#include <unordered_set>
+#include <string>
 
 namespace codexray {
-
-#ifndef CODEXRAY_HAVE_CLANG
-
-bool RunControlFlowOnTU(const TUEntry& /* tu */, ControlFlowOutput* /* out */) {
-  LogInfo("RunControlFlowOnTU: stub");
-  return true;
-}
-
-#else  // CODEXRAY_HAVE_CLANG
+namespace control_flow {
 
 namespace {
 
-using namespace clang;
-
-static int GetLine(SourceManager& SM, SourceLocation loc) {
-  return loc.isValid() ? SM.getSpellingLineNumber(loc) : 0;
-}
-static int GetColumn(SourceManager& SM, SourceLocation loc) {
-  return loc.isValid() ? SM.getSpellingColumnNumber(loc) : 0;
+static std::string GenUSR(const clang::Decl* d) {
+  llvm::SmallString<128> buf;
+  if (clang::index::generateUSRForDecl(d, buf)) return "";
+  return buf.str().str();
 }
 
-std::string GetUSR(const Decl* D, ASTContext& ctx) {
-  if (!D) return {};
-  llvm::SmallString<256> buf;
-  if (index::generateUSRForDecl(D, buf)) return {};
-  return std::string(buf.str());
+static std::string GetFilePath(const clang::SourceManager& sm, clang::SourceLocation loc) {
+  if (loc.isInvalid()) return "";
+  clang::FullSourceLoc full(loc, sm);
+  if (full.isInvalid() || full.isInSystemHeader()) return "";
+  const char* fn = sm.getPresumedLoc(full).getFilename();
+  return fn ? std::string(fn) : std::string();
 }
 
-void BuildCFGForFunction(FunctionDecl* FD, ASTContext& ctx, SourceManager& SM,
-                         ControlFlowOutput* out) {
-  if (!FD->hasBody()) return;
-  std::string func_usr = GetUSR(FD, ctx);
-  if (func_usr.empty()) return;
+static void BuildCFGForFunction(
+    clang::FunctionDecl* fd,
+    clang::ASTContext& ctx,
+    std::vector<CfgNodeRow>* cfg_nodes,
+    std::vector<CfgEdgeRow>* cfg_edges,
+    std::unordered_set<std::string>& ref_files_set,
+    std::vector<std::string>* ref_files) {
 
-  CFG::BuildOptions opts;
-  std::unique_ptr<CFG> cfg_ptr = CFG::buildCFG(FD, FD->getBody(), &ctx, opts);
-  if (!cfg_ptr) return;
-  CFG* cfg = cfg_ptr.get();
+  if (!fd->hasBody()) return;
+  std::string fn_usr = GenUSR(fd);
+  if (fn_usr.empty()) return;
 
-  std::vector<int> block_index_by_id;
-  block_index_by_id.resize(cfg->getNumBlockIDs(), -1);
-  int next_index = static_cast<int>(out->nodes.size());
+  clang::CFG::BuildOptions opts;
+  opts.AddImplicitDtors = false;
+  opts.AddEHEdges       = false;  // EH edges 大幅增加复杂度，关闭以提高稳定性
+  auto cfg = clang::CFG::buildCFG(fd, fd->getBody(), &ctx, opts);
+  if (!cfg) return;
 
-  for (CFG::const_iterator it = cfg->begin(); it != cfg->end(); ++it) {
-    const CFGBlock* block = *it;
-    if (!block) continue;
-    unsigned block_id = block->getBlockID();
-    CfgNodeRecord node;
-    node.symbol_usr = func_usr;
-    node.block_id = "B" + std::to_string(block_id);
-    node.kind = "block";
-    if (block->getTerminatorStmt()) {
-      SourceLocation loc = block->getTerminatorStmt()->getBeginLoc();
-      node.line = GetLine(SM, loc);
-      node.column = GetColumn(SM, loc);
+  // 跳过超大 CFG（通常是模板展开或极复杂函数），避免内存/时间爆炸
+  if (cfg->getNumBlockIDs() > 10000) return;
+
+  const clang::SourceManager& sm = ctx.getSourceManager();
+
+  for (const clang::CFGBlock* block : *cfg) {
+    CfgNodeRow node;
+    node.function_usr = fn_usr;
+    node.block_id     = block->getBlockID();
+
+    // Extract first statement's source location
+    for (const auto& elem : *block) {
+      if (auto stmt = elem.getAs<clang::CFGStmt>()) {
+        auto loc = stmt->getStmt()->getBeginLoc();
+        clang::FullSourceLoc full(loc, sm);
+        if (full.isValid() && !full.isInSystemHeader()) {
+          node.begin_line = full.getSpellingLineNumber();
+          node.begin_col  = full.getSpellingColumnNumber();
+          std::string fp = GetFilePath(sm, loc);
+          if (!fp.empty()) {
+            node.file_path = fp;
+            if (ref_files_set.insert(fp).second)
+              ref_files->push_back(fp);
+          }
+          break;
+        }
+      }
     }
-    out->nodes.push_back(node);
-    if (block_id < block_index_by_id.size())
-      block_index_by_id[block_id] = next_index;
-    ++next_index;
-  }
+    // Build a short label
+    if (block == &cfg->getEntry()) node.label = "entry";
+    else if (block == &cfg->getExit()) node.label = "exit";
+    else if (!block->empty()) {
+      if (auto term = block->getTerminatorStmt()) {
+        node.label = term->getStmtClassName();
+      }
+    }
+    cfg_nodes->push_back(node);
 
-  for (CFG::const_iterator it = cfg->begin(); it != cfg->end(); ++it) {
-    const CFGBlock* block = *it;
-    if (!block) continue;
-    unsigned from_id = block->getBlockID();
-    int from_idx = (from_id < block_index_by_id.size()) ? block_index_by_id[from_id] : -1;
-    if (from_idx < 0) continue;
-    for (CFGBlock::const_succ_iterator si = block->succ_begin(), se = block->succ_end(); si != se; ++si) {
-      const CFGBlock* succ = *si;
-      if (!succ) continue;
-      unsigned to_id = succ->getBlockID();
-      int to_idx = (to_id < block_index_by_id.size()) ? block_index_by_id[to_id] : -1;
-      if (to_idx < 0) continue;
-      CfgEdgeRecord edge;
-      edge.from_node_index = from_idx;
-      edge.to_node_index = to_idx;
-      edge.edge_type = "control";
-      out->edges.push_back(edge);
+    // Edges
+    size_t succ_idx = 0;
+    for (const clang::CFGBlock::AdjacentBlock& succ : block->succs()) {
+      if (!succ.getReachableBlock()) { ++succ_idx; continue; }
+      CfgEdgeRow edge;
+      edge.function_usr = fn_usr;
+      edge.from_block   = block->getBlockID();
+      edge.to_block     = succ.getReachableBlock()->getBlockID();
+      // Determine edge type: if terminator exists, first succ = true, second = false
+      if (block->getTerminatorStmt()) {
+        edge.edge_type = (succ_idx == 0) ? "true" : "false";
+      } else {
+        edge.edge_type = "unconditional";
+      }
+      cfg_edges->push_back(edge);
+      ++succ_idx;
     }
   }
 }
 
-class ControlFlowVisitor : public RecursiveASTVisitor<ControlFlowVisitor> {
- public:
-  ControlFlowVisitor(ASTContext* ctx, ControlFlowOutput* out, int64_t /* file_id */)
-      : ctx_(ctx), out_(out), sm_(&ctx->getSourceManager()) {}
+class CFGVisitor : public clang::RecursiveASTVisitor<CFGVisitor> {
+public:
+  CFGVisitor(clang::ASTContext& ctx,
+             std::vector<CfgNodeRow>* nodes,
+             std::vector<CfgEdgeRow>* edges,
+             std::vector<std::string>* ref_files)
+      : ctx_(ctx), nodes_(nodes), edges_(edges), ref_files_(ref_files) {}
 
-  bool VisitFunctionDecl(FunctionDecl* D) {
-    if (!D || !out_) return true;
-    if (!D->isThisDeclarationADefinition() || D->isImplicit()) return true;
-    BuildCFGForFunction(D, *ctx_, *sm_, out_);
+  bool VisitFunctionDecl(clang::FunctionDecl* fd) {
+    if (!fd || !fd->isThisDeclarationADefinition()) return true;
+    if (!fd->hasBody()) return true;
+    try {
+      BuildCFGForFunction(fd, ctx_, nodes_, edges_, ref_files_set_, ref_files_);
+    } catch (const std::exception& e) {
+      // Non-fatal: skip this function's CFG
+    }
     return true;
   }
 
-  /* RecursiveASTVisitor 对以下类型走各自的 Visit*，不会走 VisitFunctionDecl，需显式委托以生成 CFG。 */
-  bool VisitCXXDeductionGuideDecl(CXXDeductionGuideDecl* D) { return VisitFunctionDecl(D); }
-  bool VisitCXXMethodDecl(CXXMethodDecl* D) { return VisitFunctionDecl(D); }
-  bool VisitCXXConstructorDecl(CXXConstructorDecl* D) { return VisitFunctionDecl(D); }
-  bool VisitCXXDestructorDecl(CXXDestructorDecl* D) { return VisitFunctionDecl(D); }
-  bool VisitCXXConversionDecl(CXXConversionDecl* D) { return VisitFunctionDecl(D); }
-
- private:
-  ASTContext* ctx_;
-  ControlFlowOutput* out_;
-  SourceManager* sm_;
-};
-
-class ControlFlowConsumer : public ASTConsumer {
- public:
-  ControlFlowConsumer(ASTContext* ctx, ControlFlowOutput* out) : ctx_(ctx), out_(out) {}
-  void HandleTranslationUnit(ASTContext& ctx) override {
-    ControlFlowVisitor visitor(ctx_, out_, 0);
-    visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-  }
- private:
-  ASTContext* ctx_;
-  ControlFlowOutput* out_;
-};
-
-class ControlFlowAction : public ASTFrontendAction {
- public:
-  explicit ControlFlowAction(ControlFlowOutput* out) : out_(out) {}
-  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance& CI, StringRef) override {
-    return std::make_unique<ControlFlowConsumer>(&CI.getASTContext(), out_);
-  }
- private:
-  ControlFlowOutput* out_;
-};
-
-class ControlFlowActionFactory : public tooling::FrontendActionFactory {
- public:
-  explicit ControlFlowActionFactory(ControlFlowOutput* out) : out_(out) {}
-  std::unique_ptr<FrontendAction> create() override {
-    return std::make_unique<ControlFlowAction>(out_);
-  }
- private:
-  ControlFlowOutput* out_;
+private:
+  clang::ASTContext& ctx_;
+  std::vector<CfgNodeRow>* nodes_;
+  std::vector<CfgEdgeRow>* edges_;
+  std::vector<std::string>* ref_files_;
+  std::unordered_set<std::string> ref_files_set_;
 };
 
 }  // namespace
 
-void RunControlFlowAnalysis(clang::ASTContext& ctx, ControlFlowOutput* out) {
-  if (!out) return;
-  ControlFlowVisitor visitor(&ctx, out, 0);
-  visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+void Analyze(clang::ASTContext& ctx,
+             std::vector<CfgNodeRow>* cfg_nodes,
+             std::vector<CfgEdgeRow>* cfg_edges,
+             std::vector<std::string>* referenced_files) {
+  CFGVisitor v(ctx, cfg_nodes, cfg_edges, referenced_files);
+  v.TraverseDecl(ctx.getTranslationUnitDecl());
 }
 
-bool RunControlFlowOnTU(const TUEntry& tu, ControlFlowOutput* out) {
-  if (!out) return true;
-  std::string dir = tu.working_directory.empty() ? "." : NormalizePath(tu.working_directory);
-  size_t pos = tu.source_file.find_last_of("/\\");
-  if (dir == "." && pos != std::string::npos)
-    dir = NormalizePath(tu.source_file.substr(0, pos + 1));
-  if (dir.empty()) dir = ".";
-
-  auto db = std::make_unique<tooling::FixedCompilationDatabase>(
-      dir, llvm::ArrayRef<std::string>(tu.compile_args));
-  tooling::ClangTool tool(*db, llvm::ArrayRef<std::string>(tu.source_file));
-
-  ClangIncludeEnv env = GetClangIncludeEnv();
-  std::vector<std::string> extra;
-  if (!env.resource_dir.empty()) {
-    extra.push_back("-resource-dir");
-    extra.push_back(env.resource_dir);
-  }
-  for (const std::string& p : env.system_include_paths) {
-    extra.push_back("-isystem");
-    extra.push_back(p);
-  }
-  if (!extra.empty())
-    tool.appendArgumentsAdjuster(
-        tooling::getInsertArgumentAdjuster(extra, tooling::ArgumentInsertPosition::BEGIN));
-
-  ControlFlowActionFactory factory(out);
-  int ret = tool.run(&factory);
-  if (ret != 0) {
-    LogError("RunControlFlowOnTU: ClangTool returned %d for %s", ret, tu.source_file.c_str());
-    return false;
-  }
-  LogInfo("RunControlFlowOnTU: %zu nodes, %zu edges for %s",
-          out->nodes.size(), out->edges.size(), tu.source_file.c_str());
-  return true;
-}
-
-#endif  // CODEXRAY_HAVE_CLANG
-
+}  // namespace control_flow
 }  // namespace codexray
+
+#else
+namespace codexray { namespace control_flow {} }
+#endif
