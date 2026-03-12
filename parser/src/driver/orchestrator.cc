@@ -128,7 +128,8 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   // on_result 在持有 result_mu 的情况下串行调用，可安全写 DB
   auto on_result = [&](const TUEntry& tu, CombinedOutput& out, bool ok) {
     if (!ok) return;
-    // 每个 TU 单独事务写入，失败不影响其他 TU
+    // 每个 TU 单独事务写入（合并 WriteAll + UpdateParsedFile 为一个事务，
+    // 减少 COMMIT 次数），失败不影响其他 TU
     conn.BeginTransaction();
     if (!writer.WriteAll(out)) {
       conn.Rollback();
@@ -136,12 +137,15 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
       LogWarn("DB write failed for TU: " + tu.source_file);
       return;
     }
-    conn.Commit();
-    // 更新 parsed_file 记录
-    conn.BeginTransaction();
+    // 更新 parsed_file 记录（同一事务内）
+    // 使用子进程已计算的 mtime/hash，避免父进程重复读文件
     int64_t fid = writer.EnsureFile(tu.source_file);
-    int64_t mtime = GetFileMtime(tu.source_file);
-    std::string hash = ComputeFileHash(tu.source_file);
+    int64_t mtime = out.source_file_mtime > 0
+                        ? out.source_file_mtime
+                        : GetFileMtime(tu.source_file);
+    const std::string& hash = !out.source_file_hash.empty()
+                                  ? out.source_file_hash
+                                  : (out.source_file_hash = ComputeFileHash(tu.source_file));
     writer.UpdateParsedFile(fid, run_id, mtime, hash);
     conn.Commit();
   };
@@ -233,11 +237,15 @@ int ParseOnDemandForQuery(const std::string& project_root,
       write_errors.fetch_add(1);
       return;
     }
-    conn.Commit();
-    conn.BeginTransaction();
+    // 同一事务内更新 parsed_file 记录（优先使用子进程已计算的值）
     int64_t fid = writer.EnsureFile(tu.source_file);
-    writer.UpdateParsedFile(fid, run_id, GetFileMtime(tu.source_file),
-                            ComputeFileHash(tu.source_file));
+    int64_t mtime = out.source_file_mtime > 0
+                        ? out.source_file_mtime
+                        : GetFileMtime(tu.source_file);
+    const std::string& hash = !out.source_file_hash.empty()
+                                  ? out.source_file_hash
+                                  : (out.source_file_hash = ComputeFileHash(tu.source_file));
+    writer.UpdateParsedFile(fid, run_id, mtime, hash);
     conn.Commit();
   };
 

@@ -17,6 +17,7 @@
 #include "ast/combined/action.h"
 #include "common/analysis_output.h"
 #include "compile_commands/load.h"
+#include "incremental/incremental.h"
 #include <filesystem>
 #include <iostream>
 #include <cstdlib>
@@ -77,6 +78,9 @@ int main(int argc, char* argv[]) {
       codexray::TUEntry tu = codexray::DeserializeTUEntry(jtu);
       codexray::CombinedOutput out;
       bool ok = codexray::combined::RunAllAnalysesOnTU(tu, out);
+      // 在子进程中计算源文件 mtime 和 hash，避免父进程重复读文件
+      out.source_file_mtime = codexray::GetFileMtime(tu.source_file);
+      out.source_file_hash  = codexray::ComputeFileHash(tu.source_file);
       nlohmann::json result;
       result["ok"] = ok;
       if (ok) {

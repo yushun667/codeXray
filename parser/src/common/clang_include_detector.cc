@@ -1,154 +1,132 @@
-/**
- * 自动探测 Clang 头文件搜索路径与 resource-dir 的实现。
- * 解析 clang++ -E -x c++ - -v 的 stderr 中 "#include <...> search starts here" 至 "End of search list."。
- */
-
-#include "common/clang_include_detector.h"
-#include "common/logger.h"
-#include <sstream>
-#include <string>
-#include <mutex>
+#include "clang_include_detector.h"
+#include "logger.h"
+#include <array>
+#include <cstdlib>
 #include <cstdio>
-#include <cstring>
-
-#if defined(_WIN32) || defined(_WIN64)
-#include <io.h>
-#define popen _popen
-#define pclose _pclose
-#else
-#include <unistd.h>
-#endif
+#include <mutex>
+#include <sstream>
 
 namespace codexray {
 
 namespace {
 
-static std::mutex g_env_mutex;
-static bool g_env_cached = false;
-static ClangIncludeEnv g_cached_env;
-
-static std::string Trim(const std::string& s) {
-  size_t a = 0;
-  while (a < s.size() && (s[a] == ' ' || s[a] == '\t')) ++a;
-  size_t b = s.size();
-  while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r')) --b;
-  return s.substr(a, b - a);
+// 执行命令并捕获 stdout+stderr（合并）
+std::string RunCommand(const std::string& cmd) {
+  std::array<char, 4096> buf{};
+  std::string out;
+  FILE* fp = popen(cmd.c_str(), "r");
+  if (!fp) return out;
+  while (fgets(buf.data(), static_cast<int>(buf.size()), fp))
+    out += buf.data();
+  pclose(fp);
+  return out;
 }
 
-/** 从 clang -v 的 stderr 输出中解析 "#include <...> search starts here" 到 "End of search list." 的行 */
-static std::vector<std::string> ParseIncludePathsFromStderr(const std::string& output) {
+// 解析 clang++ -E -x c++ - -v 的 stderr，提取 #include <...> search list
+std::vector<std::string> ParseSearchPaths(const std::string& output) {
   std::vector<std::string> paths;
-  const std::string start_marker = "#include <...> search starts here:";
-  const std::string end_marker = "End of search list.";
-  size_t start = output.find(start_marker);
-  if (start == std::string::npos) return paths;
-  start += start_marker.size();
-  size_t end = output.find(end_marker, start);
-  if (end == std::string::npos) end = output.size();
-
-  std::istringstream iss(output.substr(start, end - start));
+  std::istringstream ss(output);
   std::string line;
-  while (std::getline(iss, line)) {
-    std::string path = Trim(line);
-    if (!path.empty()) paths.push_back(path);
+  bool in_section = false;
+  while (std::getline(ss, line)) {
+    if (line.find("#include <...> search starts here:") != std::string::npos) {
+      in_section = true;
+      continue;
+    }
+    if (in_section && line.find("End of search list.") != std::string::npos) break;
+    if (in_section) {
+      // strip leading whitespace
+      size_t start = line.find_first_not_of(" \t");
+      if (start != std::string::npos) {
+        std::string p = line.substr(start);
+        // strip trailing ' (framework directory)' suffix
+        size_t end = p.find(" (");
+        if (end != std::string::npos) p = p.substr(0, end);
+        if (!p.empty()) paths.push_back(p);
+      }
+    }
   }
   return paths;
 }
 
-/** 执行 command，将 stdout 与 stderr 合并读取（用于 -v 输出在 stderr 的情况） */
-static bool RunCommand(const char* cmd, std::string* out_stdout_stderr) {
-  if (!out_stdout_stderr) return false;
-  out_stdout_stderr->clear();
-  FILE* fp = popen(cmd, "r");
-  if (!fp) return false;
-  char buf[4096];
-  while (fgets(buf, sizeof(buf), fp) != nullptr)
-    *out_stdout_stderr += buf;
-  int status = pclose(fp);
-  return (status >= 0);
-}
+ClangIncludeEnv DetectEnv() {
+  ClangIncludeEnv env;
+  // resource dir
+  std::string rd = RunCommand("clang++ -print-resource-dir 2>/dev/null");
+  while (!rd.empty() && (rd.back() == '\n' || rd.back() == '\r' || rd.back() == ' '))
+    rd.pop_back();
+  env.resource_dir = rd;
 
-/** 执行 command，仅读取 stdout（用于 -print-resource-dir） */
-static bool RunCommandStdoutOnly(const char* cmd, std::string* out_stdout) {
-  if (!out_stdout) return false;
-  out_stdout->clear();
-  FILE* fp = popen(cmd, "r");
-  if (!fp) return false;
-  char buf[4096];
-  while (fgets(buf, sizeof(buf), fp) != nullptr)
-    *out_stdout += buf;
-  pclose(fp);
-  size_t end = out_stdout->size();
-  while (end > 0 && (out_stdout->at(end - 1) == '\n' || out_stdout->at(end - 1) == '\r'))
-    --end;
-  out_stdout->resize(end);
-  return true;
-}
+  // system include paths via verbose preprocessing of empty stdin
+  std::string verbose = RunCommand("echo '' | clang++ -E -x c++ - -v 2>&1");
+  env.system_includes = ParseSearchPaths(verbose);
 
-static void DetectOnce(ClangIncludeEnv* env) {
-  if (!env) return;
-  env->system_include_paths.clear();
-  env->resource_dir.clear();
-
-  std::string combined;
-#if defined(_WIN32) || defined(_WIN64)
-  const char* verbose_cmd = "clang++ -E -x c++ - -v 2>&1";
-#else
-  const char* verbose_cmd = "clang++ -E -x c++ - -v 2>&1 </dev/null";
-#endif
-  if (!RunCommand(verbose_cmd, &combined)) {
-    LogError("GetClangIncludeEnv: run clang++ -v failed");
-    return;
-  }
-  env->system_include_paths = ParseIncludePathsFromStderr(combined);
-  LogInfo("GetClangIncludeEnv: detected %zu system include paths",
-          env->system_include_paths.size());
-
-  if (!RunCommandStdoutOnly("clang++ -print-resource-dir 2>/dev/null", &env->resource_dir)) {
-    env->resource_dir.clear();
-  } else {
-    env->resource_dir = Trim(env->resource_dir);
-    if (!env->resource_dir.empty())
-      LogInfo("GetClangIncludeEnv: resource-dir=%s", env->resource_dir.c_str());
-  }
-}
-
-static std::vector<std::string> g_cached_extra_args;
-static bool g_extra_args_cached = false;
-
-static void BuildExtraArgsLocked() {
-  g_cached_extra_args.clear();
-  if (!g_cached_env.resource_dir.empty()) {
-    g_cached_extra_args.push_back("-resource-dir");
-    g_cached_extra_args.push_back(g_cached_env.resource_dir);
-  }
-  for (const std::string& p : g_cached_env.system_include_paths) {
-    g_cached_extra_args.push_back("-isystem");
-    g_cached_extra_args.push_back(p);
-  }
-  g_extra_args_cached = true;
+  LogInfo("ClangIncludeEnv: resource_dir=" + env.resource_dir +
+          " system_includes=" + std::to_string(env.system_includes.size()));
+  return env;
 }
 
 }  // namespace
 
-const ClangIncludeEnv& GetClangIncludeEnv() {
-  std::lock_guard<std::mutex> lock(g_env_mutex);
-  if (!g_env_cached) {
-    DetectOnce(&g_cached_env);
-    g_env_cached = true;
+/// 将环境变量值（ASCII 0x1F 分隔）反序列化为 ClangIncludeEnv。
+/// 格式：resource_dir\x1Fpath1\x1Fpath2\x1F...
+static ClangIncludeEnv ParseEnvString(const std::string& s) {
+  ClangIncludeEnv env;
+  const char kSep = '\x1F';  // ASCII Unit Separator
+  size_t pos = 0;
+  size_t next = s.find(kSep, pos);
+  // 第一段是 resource_dir
+  env.resource_dir = (next == std::string::npos) ? s : s.substr(0, next);
+  // 后续段是 system_includes
+  while (next != std::string::npos) {
+    pos = next + 1;
+    next = s.find(kSep, pos);
+    std::string p = (next == std::string::npos) ? s.substr(pos) : s.substr(pos, next - pos);
+    if (!p.empty()) env.system_includes.push_back(p);
   }
-  return g_cached_env;
+  return env;
 }
 
-const std::vector<std::string>& GetClangIncludeEnvExtraArgs() {
-  std::lock_guard<std::mutex> lock(g_env_mutex);
-  if (!g_env_cached) {
-    DetectOnce(&g_cached_env);
-    g_env_cached = true;
+const ClangIncludeEnv& GetClangIncludeEnv() {
+  static std::once_flag flag;
+  static ClangIncludeEnv env;
+  std::call_once(flag, [&] {
+    // 优先从环境变量读取（fork+exec 子进程路径，避免重复探测）
+    const char* ev = std::getenv("CODEXRAY_CLANG_INCLUDE_ENV");
+    if (ev && ev[0]) {
+      env = ParseEnvString(ev);
+      LogInfo("ClangIncludeEnv: loaded from env var, resource_dir=" +
+              env.resource_dir + " system_includes=" +
+              std::to_string(env.system_includes.size()));
+    } else {
+      env = DetectEnv();
+    }
+  });
+  return env;
+}
+
+std::string SerializeClangIncludeEnv(const ClangIncludeEnv& env) {
+  const char kSep = '\x1F';  // ASCII Unit Separator，避免路径中常见的 | : 冲突
+  std::string s = env.resource_dir;
+  for (const auto& p : env.system_includes) {
+    s += kSep;
+    s += p;
   }
-  if (!g_extra_args_cached)
-    BuildExtraArgsLocked();
-  return g_cached_extra_args;
+  return s;
+}
+
+std::vector<std::string> ClangIncludeArgs() {
+  const auto& env = GetClangIncludeEnv();
+  std::vector<std::string> args;
+  if (!env.resource_dir.empty()) {
+    args.push_back("-resource-dir");
+    args.push_back(env.resource_dir);
+  }
+  for (const auto& p : env.system_includes) {
+    args.push_back("-isystem");
+    args.push_back(p);
+  }
+  return args;
 }
 
 }  // namespace codexray

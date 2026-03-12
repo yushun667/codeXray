@@ -1,5 +1,6 @@
 #include "pool.h"
 #include "../common/logger.h"
+#include "../common/clang_include_detector.h"
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -139,6 +140,10 @@ nlohmann::json SerializeCombinedOutput(const CombinedOutput& o) {
   }
 
   j["referenced_files"] = o.referenced_files;
+
+  // 源文件元数据（子进程计算，避免父进程重复读文件）
+  j["source_file_mtime"] = o.source_file_mtime;
+  j["source_file_hash"]  = o.source_file_hash;
   return j;
 }
 
@@ -243,6 +248,11 @@ void DeserializeCombinedOutput(const nlohmann::json& j, CombinedOutput& o) {
     for (const auto& x : j["referenced_files"])
       if (x.is_string()) o.referenced_files.push_back(x.get<std::string>());
   }
+  // 源文件元数据
+  if (j.contains("source_file_mtime") && j["source_file_mtime"].is_number())
+    o.source_file_mtime = j["source_file_mtime"].get<int64_t>();
+  if (j.contains("source_file_hash") && j["source_file_hash"].is_string())
+    o.source_file_hash = j["source_file_hash"].get<std::string>();
 }
 
 // ─── 获取自身可执行文件路径 ──────────────────────────────────────────────────
@@ -400,6 +410,14 @@ RunResult RunScheduled(
   if (self_path.empty()) {
     LogError("Cannot determine self executable path for fork+exec");
     return {};
+  }
+
+  // 父进程预先探测 Clang 系统 include 路径，通过环境变量传递给 fork+exec 子进程，
+  // 避免每个子进程重复运行 clang++ 子进程探测（2935 TU × 2 次 popen → 0 次）。
+  {
+    const auto& inc_env = GetClangIncludeEnv();
+    std::string serialized = SerializeClangIncludeEnv(inc_env);
+    setenv("CODEXRAY_CLANG_INCLUDE_ENV", serialized.c_str(), 1);
   }
 
   RunResult result;
