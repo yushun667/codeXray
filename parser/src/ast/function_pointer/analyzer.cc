@@ -1,97 +1,156 @@
-/**
- * 解析引擎 AST：函数指针可能目标分析
- * 无 Clang 时占位返回空；有 Clang 时基于调用点类型与 TU 内函数类型匹配保守枚举可能 callee。
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.6
- */
-
-#include "ast/function_pointer/analyzer.h"
-#include "common/logger.h"
-#include <vector>
+#include "analyzer.h"
 
 #ifdef CODEXRAY_HAVE_CLANG
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/Decl.h"
-#include "clang/AST/Expr.h"
-#include "clang/AST/Type.h"
-#include "clang/Index/USRGeneration.h"
-#include "llvm/ADT/SmallString.h"
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/Index/USRGeneration.h>
+#include <llvm/ADT/SmallString.h>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <string>
-#endif
 
 namespace codexray {
-
-std::vector<std::string> GetPossibleCallees(const std::string& /* caller_usr */) {
-  return {};
-}
-
-#ifdef CODEXRAY_HAVE_CLANG
+namespace function_pointer {
 
 namespace {
 
-using namespace clang;
-
-const FunctionProtoType* GetFunctionType(QualType qt) {
-  qt = qt.getCanonicalType();
-  if (const PointerType* pt = qt->getAs<PointerType>())
-    qt = pt->getPointeeType();
-  else if (const ReferenceType* rt = qt->getAs<ReferenceType>())
-    qt = rt->getPointeeType();
-  else
-    return nullptr;
-  return qt->getAs<FunctionProtoType>();
+// Generate USR string for a Decl
+static std::string GenUSR(const clang::Decl* d) {
+  llvm::SmallString<128> buf;
+  if (clang::index::generateUSRForDecl(d, buf)) return "";
+  return buf.str().str();
 }
 
-static void CollectMatchingInContext(DeclContext* dc, ASTContext& ctx,
-                                      const FunctionProtoType* target,
-                                      std::vector<std::string>* out) {
-  if (!dc || !target || !out) return;
-  for (Decl* d : dc->decls()) {
-    if (auto* fd = dyn_cast<FunctionDecl>(d)) {
-      if (!fd->isImplicit() && (fd->hasBody() || fd->isDefined())) {
-        const FunctionType* ft = fd->getType()->getAs<FunctionType>();
-        const FunctionProtoType* fpt = dyn_cast_or_null<FunctionProtoType>(ft);
-        if (!fpt) continue;
-        if (!ctx.hasSameType(target->getReturnType(), fpt->getReturnType()))
-          continue;
-        if (target->getNumParams() != fpt->getNumParams()) continue;
-        bool params_match = true;
-        for (unsigned i = 0; i < target->getNumParams(); ++i) {
-          if (!ctx.hasSameType(target->getParamType(i), fpt->getParamType(i))) {
-            params_match = false;
-            break;
-          }
-        }
-        if (!params_match) continue;
-        llvm::SmallString<256> buf;
-        if (index::generateUSRForDecl(fd, buf)) continue;
-        out->push_back(std::string(buf.str()));
+// Visitor：收集函数指针赋值，建立 VarDecl USR → 被赋值函数 USR 的映射
+class AssignmentVisitor
+    : public clang::RecursiveASTVisitor<AssignmentVisitor> {
+public:
+  explicit AssignmentVisitor(
+      std::unordered_map<std::string, std::vector<std::string>>* map)
+      : map_(map) {}
+
+  bool VisitVarDecl(clang::VarDecl* vd) {
+    if (!vd) return true;
+    clang::QualType qt = vd->getType().getCanonicalType();
+    bool is_fp = qt->isFunctionPointerType();
+    bool is_mfp = qt->isMemberFunctionPointerType();
+    if (!is_fp && !is_mfp) return true;
+    if (auto* init = vd->getInit()) CollectFunctionRef(GenUSR(vd), init);
+    return true;
+  }
+
+  bool VisitBinaryOperator(clang::BinaryOperator* bo) {
+    if (!bo->isAssignmentOp()) return true;
+    clang::QualType qt = bo->getLHS()->getType().getCanonicalType();
+    if (!qt->isFunctionPointerType() && !qt->isMemberFunctionPointerType()) return true;
+    // LHS: try to get VarDecl
+    if (auto* dr = clang::dyn_cast<clang::DeclRefExpr>(
+            bo->getLHS()->IgnoreParenImpCasts())) {
+      if (auto* vd = clang::dyn_cast<clang::VarDecl>(dr->getDecl())) {
+        CollectFunctionRef(GenUSR(vd), bo->getRHS());
       }
     }
-    if (auto* nd = dyn_cast<NamespaceDecl>(d))
-      CollectMatchingInContext(nd, ctx, target, out);
+    return true;
   }
-}
 
-void CollectMatchingFunctions(ASTContext& ctx, const FunctionProtoType* target,
-                              std::vector<std::string>* out) {
-  if (!target || !out) return;
-  CollectMatchingInContext(ctx.getTranslationUnitDecl(), ctx, target, out);
-}
+private:
+  void CollectFunctionRef(const std::string& var_usr, clang::Expr* expr) {
+    if (var_usr.empty()) return;
+    expr = expr->IgnoreParenImpCasts();
+    // 普通函数引用：DeclRefExpr → FunctionDecl
+    if (auto* dr = clang::dyn_cast<clang::DeclRefExpr>(expr)) {
+      if (auto* fd = clang::dyn_cast<clang::FunctionDecl>(dr->getDecl())) {
+        std::string usr = GenUSR(fd);
+        if (!usr.empty()) (*map_)[var_usr].push_back(usr);
+      }
+    }
+    // 成员函数指针：UnaryOperator(&) 包裹的 DeclRefExpr → CXXMethodDecl
+    // 例：void (MyClass::*fp)() = &MyClass::foo;
+    if (auto* uo = clang::dyn_cast<clang::UnaryOperator>(expr)) {
+      if (uo->getOpcode() == clang::UO_AddrOf) {
+        auto* inner = uo->getSubExpr()->IgnoreParenImpCasts();
+        if (auto* dr = clang::dyn_cast<clang::DeclRefExpr>(inner)) {
+          if (auto* md = clang::dyn_cast<clang::CXXMethodDecl>(dr->getDecl())) {
+            std::string usr = GenUSR(md);
+            if (!usr.empty()) (*map_)[var_usr].push_back(usr);
+          }
+        }
+      }
+    }
+  }
+  std::unordered_map<std::string, std::vector<std::string>>* map_;
+};
 
 }  // namespace
 
-std::vector<std::string> GetPossibleCallees(CallExpr* call, ASTContext& ctx,
-                                            const std::string& caller_usr) {
-  std::vector<std::string> result;
-  if (!call) return result;
-  const Expr* calleeExpr = call->getCallee()->IgnoreParenImpCasts();
-  QualType qt = calleeExpr->getType();
-  const FunctionProtoType* fpt = GetFunctionType(qt);
-  if (!fpt) return result;
-  CollectMatchingFunctions(ctx, fpt, &result);
-  return result;
+void CollectAssignments(
+    clang::ASTContext& ctx,
+    std::unordered_map<std::string, std::vector<std::string>>* fu_map) {
+  AssignmentVisitor v(fu_map);
+  v.TraverseDecl(ctx.getTranslationUnitDecl());
+}
+
+std::vector<std::string> GetPossibleCallees(
+    clang::CallExpr* call,
+    clang::ASTContext& ctx,
+    const std::unordered_map<std::string, std::vector<std::string>>* fu_map) {
+  std::unordered_set<std::string> found;
+
+  // Stage 1: look up callee expr → VarDecl → fu_map
+  // 同时处理普通函数指针和成员函数指针（通过 VarDecl 赋值追踪）
+  if (fu_map) {
+    auto* callee_expr = call->getCallee()->IgnoreParenImpCasts();
+
+    // 普通函数指针：(fp)(args) → DeclRefExpr → VarDecl
+    if (auto* dr = clang::dyn_cast<clang::DeclRefExpr>(callee_expr)) {
+      if (auto* vd = clang::dyn_cast<clang::VarDecl>(dr->getDecl())) {
+        std::string var_usr = GenUSR(vd);
+        auto it = fu_map->find(var_usr);
+        if (it != fu_map->end()) {
+          for (const auto& u : it->second) found.insert(u);
+        }
+      }
+    }
+
+    // 成员函数指针：(obj.*mfp)(args) 或 (ptr->*mfp)(args)
+    // Clang 将这类调用表示为 CXXMemberCallExpr，callee 是 BinaryOperator(.* 或 ->*)
+    // 外层 CallExpr 的 callee 经过 strip 后可能是 ParenExpr 包裹的 BinaryOperator
+    if (found.empty()) {
+      auto* raw_callee = call->getCallee()->IgnoreParens();
+      if (auto* bo = clang::dyn_cast<clang::BinaryOperator>(raw_callee)) {
+        if (bo->getOpcode() == clang::BO_PtrMemD ||
+            bo->getOpcode() == clang::BO_PtrMemI) {
+          // RHS 是成员函数指针变量
+          auto* rhs = bo->getRHS()->IgnoreParenImpCasts();
+          if (auto* dr = clang::dyn_cast<clang::DeclRefExpr>(rhs)) {
+            if (auto* vd = clang::dyn_cast<clang::VarDecl>(dr->getDecl())) {
+              std::string var_usr = GenUSR(vd);
+              auto it = fu_map->find(var_usr);
+              if (it != fu_map->end()) {
+                for (const auto& u : it->second) found.insert(u);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 仅依赖 Stage 1 数据流分析结果。若无法追踪到具体赋值，
+  // 不产生任何边——宁可漏报也不误报（保守枚举会产生大量虚假边）。
+
+  return std::vector<std::string>(found.begin(), found.end());
+}
+
+}  // namespace function_pointer
+}  // namespace codexray
+
+#else  // !CODEXRAY_HAVE_CLANG
+
+// Stub when Clang is not available
+namespace codexray {
+namespace function_pointer {
+}
 }
 
 #endif  // CODEXRAY_HAVE_CLANG
-
-}  // namespace codexray

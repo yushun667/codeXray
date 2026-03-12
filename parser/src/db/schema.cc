@@ -97,7 +97,8 @@ bool EnsureSchema(sqlite3* db) {
       "  edge_type TEXT NOT NULL DEFAULT 'direct',"
       "  call_file_id INTEGER REFERENCES file(id),"
       "  call_line INTEGER DEFAULT 0,"
-      "  call_column INTEGER DEFAULT 0"
+      "  call_column INTEGER DEFAULT 0,"
+      "  UNIQUE(caller_id, callee_id, call_file_id, call_line, call_column)"
       ")")) return false;
 
   if (!Exec(db, "CREATE INDEX IF NOT EXISTS idx_call_edge_caller ON call_edge(caller_id)")) return false;
