@@ -1,0 +1,31 @@
+// CodeXray 控制流图（CFG）Protobuf 定义
+// 每个函数的 CFG 数据存储于独立的 .pb 文件（按函数 USR 的 FNV64 哈希分片）。
+// 文件路径：<db_dir>/cfg/<hash[0:2]>/<hash>.pb
+syntax = "proto3";
+
+package codexray.cfg;
+
+// 控制流图基本块节点
+message CfgNode {
+  int32  block_id    = 1;  // Clang CFGBlock::getBlockID()，函数内唯一
+  string file_path   = 2;  // 源文件路径（首条语句所在文件）
+  int32  begin_line  = 3;
+  int32  begin_col   = 4;
+  int32  end_line    = 5;
+  int32  end_col     = 6;
+  string label       = 7;  // "entry" / "exit" / terminator 类型名称
+}
+
+// 控制流图边
+message CfgEdge {
+  int32  from_block  = 1;  // 源基本块 block_id
+  int32  to_block    = 2;  // 目标基本块 block_id
+  string edge_type   = 3;  // "unconditional" / "true" / "false"
+}
+
+// 单个函数的完整 CFG（写入 .pb 文件的顶层消息）
+message FunctionCfg {
+  string            function_usr = 1;  // 函数 Clang USR
+  repeated CfgNode  nodes        = 2;
+  repeated CfgEdge  edges        = 3;
+}

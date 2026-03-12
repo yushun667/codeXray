@@ -17,6 +17,7 @@
 #include "ast/combined/action.h"
 #include "common/analysis_output.h"
 #include "compile_commands/load.h"
+#include <filesystem>
 #include <iostream>
 #include <cstdlib>
 #include <string>
@@ -243,9 +244,12 @@ int main(int argc, char* argv[]) {
     else if (query_opts.query_type == "data_flow")
       json = codexray::QueryDataFlowJson(
           conn.Get(), query_opts.symbol, query_opts.file_path);
-    else if (query_opts.query_type == "control_flow")
+    else if (query_opts.query_type == "control_flow") {
+      // db_dir：db 文件所在目录，用于定位 cfg/ pb 文件
+      std::string db_dir = std::filesystem::path(query_opts.db_path).parent_path().string();
       json = codexray::QueryControlFlowJson(
-          conn.Get(), query_opts.symbol, query_opts.file_path);
+          conn.Get(), db_dir, query_opts.symbol, query_opts.file_path);
+    }
     else {
       std::cerr << "Unknown query type: " << query_opts.query_type << "\n";
       return static_cast<int>(codexray::ExitCode::kQueryFailed);

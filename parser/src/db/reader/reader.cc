@@ -1,425 +1,567 @@
-/**
- * 解析引擎 DB reader 实现
- */
-
-#include "db/reader/reader.h"
-#include "common/logger.h"
-#include <sqlite3.h>
-#include <set>
+#include "reader.h"
+#include "../../common/logger.h"
+#include "cfg.pb.h"
+#include <filesystem>
+#include <fstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
 
 namespace codexray {
 
 namespace {
 
-static const char kSymbolSelectWhereUsr[] =
-    "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
-    "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE usr = ?";
-static const char kSymbolSelectWhereDefFile[] =
-    "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
-    "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE def_file_id = ?";
-
-std::string ColText(sqlite3_stmt* stmt, int col) {
-  const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
-  return p ? std::string(p) : "";
+// Bind text helper
+static void BindText(sqlite3_stmt* s, int idx, const std::string& v) {
+  sqlite3_bind_text(s, idx, v.c_str(), -1, SQLITE_TRANSIENT);
 }
 
-int ColInt(sqlite3_stmt* stmt, int col) {
-  if (sqlite3_column_type(stmt, col) == SQLITE_NULL) return 0;
-  return sqlite3_column_int(stmt, col);
+// Safe column text
+static std::string ColText(sqlite3_stmt* s, int col) {
+  const char* p = reinterpret_cast<const char*>(sqlite3_column_text(s, col));
+  return p ? std::string(p) : std::string();
 }
 
-int64_t ColInt64(sqlite3_stmt* stmt, int col) {
-  if (sqlite3_column_type(stmt, col) == SQLITE_NULL) return 0;
-  return sqlite3_column_int64(stmt, col);
+// Lookup file path by id (simple cache via unordered_map passed in)
+static std::string FilePath(sqlite3* db, int64_t fid,
+                             std::unordered_map<int64_t, std::string>& cache) {
+  if (fid <= 0) return "";
+  auto it = cache.find(fid);
+  if (it != cache.end()) return it->second;
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, "SELECT path FROM file WHERE id=?", -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, fid);
+  std::string path;
+  if (sqlite3_step(s) == SQLITE_ROW) path = ColText(s, 0);
+  sqlite3_finalize(s);
+  cache[fid] = path;
+  return path;
 }
 
-SymbolRow SymbolFromStmt(sqlite3_stmt* stmt) {
-  SymbolRow r;
-  r.id = sqlite3_column_int64(stmt, 0);
-  r.usr = ColText(stmt, 1);
-  r.name = ColText(stmt, 2);
-  r.qualified_name = ColText(stmt, 3);
-  r.kind = ColText(stmt, 4);
-  r.def_file_id = sqlite3_column_int64(stmt, 5);
-  r.def_line = sqlite3_column_int(stmt, 6);
-  r.def_column = sqlite3_column_int(stmt, 7);
-  r.def_line_end = sqlite3_column_int(stmt, 8);
-  r.def_column_end = sqlite3_column_int(stmt, 9);
-  r.decl_file_id = ColInt64(stmt, 10);
-  r.decl_line = ColInt(stmt, 11);
-  r.decl_column = ColInt(stmt, 12);
-  r.decl_line_end = ColInt(stmt, 13);
-  r.decl_column_end = ColInt(stmt, 14);
-  return r;
+// Resolve symbol by USR or name, return DB id
+static int64_t ResolveSymbolId(sqlite3* db,
+                                const std::string& usr_or_name,
+                                const std::string& file_path) {
+  if (usr_or_name.empty()) return 0;
+  // Try by USR first (USRs start with 'c:')
+  if (usr_or_name.size() > 2 && usr_or_name[0] == 'c' && usr_or_name[1] == ':') {
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db, "SELECT id FROM symbol WHERE usr=?", -1, &s, nullptr);
+    BindText(s, 1, usr_or_name);
+    int64_t id = 0;
+    if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    if (id) return id;
+  }
+  // Try by name + optional file filter
+  const char* sql = file_path.empty()
+      ? "SELECT s.id FROM symbol s WHERE s.name=? LIMIT 1"
+      : "SELECT s.id FROM symbol s JOIN file f ON s.def_file_id=f.id"
+        " WHERE s.name=? AND f.path LIKE ? LIMIT 1";
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+  BindText(s, 1, usr_or_name);
+  if (!file_path.empty()) BindText(s, 2, "%" + file_path + "%");
+  int64_t id = 0;
+  if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+  sqlite3_finalize(s);
+  return id;
+}
+
+static QueryNode LoadSymbolNode(sqlite3* db, int64_t sym_id,
+                                 std::unordered_map<int64_t, std::string>& fc) {
+  QueryNode n{};
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db,
+      "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,"
+      "def_line_end,def_col_end FROM symbol WHERE id=?", -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, sym_id);
+  if (sqlite3_step(s) == SQLITE_ROW) {
+    n.id             = sqlite3_column_int64(s, 0);
+    n.usr            = ColText(s, 1);
+    n.name           = ColText(s, 2);
+    n.qualified_name = ColText(s, 3);
+    n.kind           = ColText(s, 4);
+    n.def_file       = FilePath(db, sqlite3_column_int64(s, 5), fc);
+    n.def_line       = sqlite3_column_int(s, 6);
+    n.def_column     = sqlite3_column_int(s, 7);
+    n.def_line_end   = sqlite3_column_int(s, 8);
+    n.def_col_end    = sqlite3_column_int(s, 9);
+  }
+  sqlite3_finalize(s);
+  return n;
 }
 
 }  // namespace
 
-SymbolRow QuerySymbolByUsr(sqlite3* db, const std::string& usr) {
-  SymbolRow r;
-  if (!db) return r;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, kSymbolSelectWhereUsr, -1, &stmt, nullptr) != SQLITE_OK)
-    return r;
-  sqlite3_bind_text(stmt, 1, usr.c_str(), -1, SQLITE_TRANSIENT);
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    r = SymbolFromStmt(stmt);
-  sqlite3_finalize(stmt);
-  return r;
-}
+// ─── project helpers ─────────────────────────────────────────────────────────
 
-std::vector<SymbolRow> QuerySymbolsByFile(sqlite3* db, int64_t file_id) {
-  std::vector<SymbolRow> out;
-  if (!db) return out;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, kSymbolSelectWhereDefFile, -1, &stmt, nullptr) != SQLITE_OK)
-    return out;
-  sqlite3_bind_int64(stmt, 1, file_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    out.push_back(SymbolFromStmt(stmt));
-  }
-  sqlite3_finalize(stmt);
-  return out;
-}
-
-/* 按位置查符号：def/decl 范围覆盖 (line, column_hint)；设计 §3.14 行号在 [def_line, def_line_end] 内 */
-std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id, int line, int column_hint) {
-  std::vector<SymbolRow> out;
-  if (!db || line <= 0) return out;
-  const char* sql = (column_hint != 0)
-      ? "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
-        "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE "
-        "(def_file_id=? AND ?>=def_line AND (def_line_end=0 OR ?<=def_line_end) AND ?>=def_column AND (def_column_end=0 OR ?<=def_column_end)) "
-        "OR (decl_file_id=? AND decl_file_id!=0 AND ?>=decl_line AND (decl_line_end=0 OR ?<=decl_line_end) AND ?>=decl_column AND (decl_column_end=0 OR ?<=decl_column_end))"
-      : "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,def_line_end,def_column_end,"
-        "decl_file_id,decl_line,decl_column,decl_line_end,decl_column_end FROM symbol WHERE "
-        "(def_file_id=? AND ?>=def_line AND (def_line_end=0 OR ?<=def_line_end)) "
-        "OR (decl_file_id=? AND decl_file_id!=0 AND ?>=decl_line AND (decl_line_end=0 OR ?<=decl_line_end))";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
-  if (column_hint != 0) {
-    sqlite3_bind_int64(stmt, 1, file_id);
-    sqlite3_bind_int(stmt, 2, line);
-    sqlite3_bind_int(stmt, 3, line);
-    sqlite3_bind_int(stmt, 4, column_hint);
-    sqlite3_bind_int(stmt, 5, column_hint);
-    sqlite3_bind_int64(stmt, 6, file_id);
-    sqlite3_bind_int(stmt, 7, line);
-    sqlite3_bind_int(stmt, 8, line);
-    sqlite3_bind_int(stmt, 9, column_hint);
-    sqlite3_bind_int(stmt, 10, column_hint);
-  } else {
-    sqlite3_bind_int64(stmt, 1, file_id);
-    sqlite3_bind_int(stmt, 2, line);
-    sqlite3_bind_int(stmt, 3, line);
-    sqlite3_bind_int64(stmt, 4, file_id);
-    sqlite3_bind_int(stmt, 5, line);
-    sqlite3_bind_int(stmt, 6, line);
-  }
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    out.push_back(SymbolFromStmt(stmt));
-  }
-  sqlite3_finalize(stmt);
-  return out;
-}
-
-std::vector<CallEdgeRow> QueryCallEdges(sqlite3* db,
-                                        const std::string& symbol_usr,
-                                        bool by_caller,
-                                        int depth) {
-  std::vector<CallEdgeRow> out;
-  if (!db || depth <= 0) return out;
-  SymbolRow sym = QuerySymbolByUsr(db, symbol_usr);
-  if (sym.id == 0) return out;
-  const char* sql_dir = by_caller
-      ? "SELECT e.caller_id,e.callee_id,s1.usr,s2.usr,e.call_site_file_id,e.call_site_line,e.call_site_column,e.edge_type "
-        "FROM call_edge e JOIN symbol s1 ON e.caller_id=s1.id JOIN symbol s2 ON e.callee_id=s2.id WHERE e.caller_id = ?"
-      : "SELECT e.caller_id,e.callee_id,s1.usr,s2.usr,e.call_site_file_id,e.call_site_line,e.call_site_column,e.edge_type "
-        "FROM call_edge e JOIN symbol s1 ON e.caller_id=s1.id JOIN symbol s2 ON e.callee_id=s2.id WHERE e.callee_id = ?";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql_dir, -1, &stmt, nullptr) != SQLITE_OK) return out;
-  std::set<int64_t> seen;
-  std::vector<int64_t> frontier = {sym.id};
-  seen.insert(sym.id);
-  for (int d = 0; d < depth && !frontier.empty(); ++d) {
-    std::vector<int64_t> next;
-    for (int64_t id : frontier) {
-      sqlite3_reset(stmt);
-      sqlite3_bind_int64(stmt, 1, id);
-      while (sqlite3_step(stmt) == SQLITE_ROW) {
-        CallEdgeRow row;
-        row.caller_id = sqlite3_column_int64(stmt, 0);
-        row.callee_id = sqlite3_column_int64(stmt, 1);
-        row.caller_usr = ColText(stmt, 2);
-        row.callee_usr = ColText(stmt, 3);
-        row.call_site_file_id = sqlite3_column_int64(stmt, 4);
-        row.call_site_line = sqlite3_column_int(stmt, 5);
-        row.call_site_column = sqlite3_column_int(stmt, 6);
-        row.edge_type = ColText(stmt, 7);
-        out.push_back(row);
-        int64_t other = by_caller ? row.callee_id : row.caller_id;
-        if (seen.insert(other).second) next.push_back(other);
-      }
-    }
-    frontier = std::move(next);
-  }
-  sqlite3_finalize(stmt);
-  return out;
-}
-
-std::vector<CallEdgeRow> QueryCallGraphExpand(sqlite3* db,
-                                              const std::string& from_usr,
-                                              const std::string& direction,
-                                              int depth) {
-  bool by_caller = (direction == "caller");
-  return QueryCallEdges(db, from_usr, by_caller, depth);
-}
-
-std::string QueryFilePath(sqlite3* db, int64_t file_id) {
-  if (!db) return "";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT path FROM file WHERE id = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return "";
-  sqlite3_bind_int64(stmt, 1, file_id);
-  std::string path;
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    path = ColText(stmt, 0);
-  sqlite3_finalize(stmt);
-  return path;
-}
-
-int64_t QueryProjectIdByRoot(sqlite3* db, const std::string& root_path) {
-  if (!db) return 0;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id FROM project WHERE root_path = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return 0;
-  sqlite3_bind_text(stmt, 1, root_path.c_str(), -1, SQLITE_TRANSIENT);
+int64_t GetProjectId(sqlite3* db, const std::string& root_path) {
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, "SELECT id FROM project WHERE root_path=?", -1, &s, nullptr);
+  BindText(s, 1, root_path);
   int64_t id = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
-  sqlite3_finalize(stmt);
+  if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+  sqlite3_finalize(s);
   return id;
+}
+
+int64_t EnsureProjectId(sqlite3* db, const std::string& root_path,
+                        const std::string& cc_path) {
+  int64_t id = GetProjectId(db, root_path);
+  if (id) return id;
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db,
+      "INSERT OR IGNORE INTO project(root_path, compile_commands_path) VALUES(?,?)",
+      -1, &s, nullptr);
+  BindText(s, 1, root_path);
+  BindText(s, 2, cc_path);
+  sqlite3_step(s);
+  sqlite3_finalize(s);
+  return GetProjectId(db, root_path);
 }
 
 int64_t QueryFileIdByPath(sqlite3* db, int64_t project_id, const std::string& path) {
-  if (!db) return 0;
-  sqlite3_stmt* stmt = nullptr;
-  if (project_id > 0) {
-    if (sqlite3_prepare_v2(db, "SELECT id FROM file WHERE project_id = ? AND path = ?", -1, &stmt, nullptr) != SQLITE_OK)
-      return 0;
-    sqlite3_bind_int64(stmt, 1, project_id);
-    sqlite3_bind_text(stmt, 2, path.c_str(), -1, SQLITE_TRANSIENT);
-  } else {
-    if (sqlite3_prepare_v2(db, "SELECT id FROM file WHERE path = ? LIMIT 1", -1, &stmt, nullptr) != SQLITE_OK)
-      return 0;
-    sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-  }
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db,
+      "SELECT id FROM file WHERE project_id=? AND path=?", -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, project_id);
+  BindText(s, 2, path);
   int64_t id = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
-  sqlite3_finalize(stmt);
+  if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+  sqlite3_finalize(s);
   return id;
 }
 
+std::string QueryFilePathById(sqlite3* db, int64_t file_id) {
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, "SELECT path FROM file WHERE id=?", -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, file_id);
+  std::string p;
+  if (sqlite3_step(s) == SQLITE_ROW) p = ColText(s, 0);
+  sqlite3_finalize(s);
+  return p;
+}
+
 bool IsFileParsed(sqlite3* db, int64_t project_id, int64_t file_id) {
-  if (!db || file_id <= 0) return false;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT 1 FROM parsed_file WHERE project_id = ? AND file_id = ? LIMIT 1", -1, &stmt, nullptr) != SQLITE_OK)
-    return false;
-  sqlite3_bind_int64(stmt, 1, project_id);
-  sqlite3_bind_int64(stmt, 2, file_id);
-  bool found = (sqlite3_step(stmt) == SQLITE_ROW);
-  sqlite3_finalize(stmt);
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db,
+      "SELECT 1 FROM parsed_file WHERE project_id=? AND file_id=?", -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, project_id);
+  sqlite3_bind_int64(s, 2, file_id);
+  bool found = (sqlite3_step(s) == SQLITE_ROW);
+  sqlite3_finalize(s);
   return found;
 }
 
-// --- class ---
-ClassRow QueryClassByUsr(sqlite3* db, const std::string& usr) {
-  ClassRow r;
-  if (!db) return r;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,usr,file_id,name,qualified_name,def_file_id,def_line,def_column,def_line_end,def_column_end FROM class WHERE usr = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return r;
-  sqlite3_bind_text(stmt, 1, usr.c_str(), -1, SQLITE_TRANSIENT);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    r.id = sqlite3_column_int64(stmt, 0);
-    r.usr = ColText(stmt, 1);
-    r.file_id = sqlite3_column_int64(stmt, 2);
-    r.name = ColText(stmt, 3);
-    r.qualified_name = ColText(stmt, 4);
-    r.def_file_id = sqlite3_column_int64(stmt, 5);
-    r.def_line = sqlite3_column_int(stmt, 6);
-    r.def_column = sqlite3_column_int(stmt, 7);
-    r.def_line_end = sqlite3_column_int(stmt, 8);
-    r.def_column_end = sqlite3_column_int(stmt, 9);
+// ─── symbol by location ───────────────────────────────────────────────────────
+
+std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id,
+                                                  int line, int column) {
+  std::vector<SymbolRow> result;
+  // Best match: definition range [def_line, def_line_end] contains line
+  const char* sql =
+      "SELECT usr, name, qualified_name, kind, def_file_id, def_line, def_column,"
+      " def_line_end, def_col_end FROM symbol"
+      " WHERE def_file_id=? AND def_line <= ? AND def_line_end >= ?"
+      " ORDER BY (def_line_end - def_line) ASC LIMIT 5";
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, file_id);
+  sqlite3_bind_int(s, 2, line);
+  sqlite3_bind_int(s, 3, line);
+  while (sqlite3_step(s) == SQLITE_ROW) {
+    SymbolRow r;
+    r.usr            = ColText(s, 0);
+    r.name           = ColText(s, 1);
+    r.qualified_name = ColText(s, 2);
+    r.kind           = ColText(s, 3);
+    r.def_file_id    = sqlite3_column_int64(s, 4);
+    r.def_line       = sqlite3_column_int(s, 5);
+    r.def_column     = sqlite3_column_int(s, 6);
+    r.def_line_end   = sqlite3_column_int(s, 7);
+    r.def_col_end    = sqlite3_column_int(s, 8);
+    result.push_back(r);
   }
-  sqlite3_finalize(stmt);
-  if (r.id > 0) r.def_file_path = QueryFilePath(db, r.def_file_id);
-  return r;
+  sqlite3_finalize(s);
+  return result;
 }
 
-std::vector<ClassRow> QueryClassesByFile(sqlite3* db, int64_t file_id) {
-  std::vector<ClassRow> out;
-  if (!db) return out;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,usr,file_id,name,qualified_name,def_file_id,def_line,def_column,def_line_end,def_column_end FROM class WHERE file_id = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return out;
-  sqlite3_bind_int64(stmt, 1, file_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    ClassRow r;
-    r.id = sqlite3_column_int64(stmt, 0);
-    r.usr = ColText(stmt, 1);
-    r.file_id = sqlite3_column_int64(stmt, 2);
-    r.name = ColText(stmt, 3);
-    r.qualified_name = ColText(stmt, 4);
-    r.def_file_id = sqlite3_column_int64(stmt, 5);
-    r.def_line = sqlite3_column_int(stmt, 6);
-    r.def_column = sqlite3_column_int(stmt, 7);
-    r.def_line_end = sqlite3_column_int(stmt, 8);
-    r.def_column_end = sqlite3_column_int(stmt, 9);
-    r.def_file_path = QueryFilePath(db, r.def_file_id);
-    out.push_back(r);
+std::vector<QueryNode> QuerySymbolsByName(sqlite3* db, const std::string& name,
+                                           int limit) {
+  std::vector<QueryNode> result;
+  std::unordered_map<int64_t, std::string> fc;
+  const char* sql =
+      "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,"
+      "def_line_end,def_col_end FROM symbol WHERE name LIKE ? LIMIT ?";
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+  BindText(s, 1, "%" + name + "%");
+  sqlite3_bind_int(s, 2, limit);
+  while (sqlite3_step(s) == SQLITE_ROW) {
+    QueryNode n;
+    n.id             = sqlite3_column_int64(s, 0);
+    n.usr            = ColText(s, 1);
+    n.name           = ColText(s, 2);
+    n.qualified_name = ColText(s, 3);
+    n.kind           = ColText(s, 4);
+    n.def_file       = FilePath(db, sqlite3_column_int64(s, 5), fc);
+    n.def_line       = sqlite3_column_int(s, 6);
+    n.def_column     = sqlite3_column_int(s, 7);
+    n.def_line_end   = sqlite3_column_int(s, 8);
+    n.def_col_end    = sqlite3_column_int(s, 9);
+    result.push_back(n);
   }
-  sqlite3_finalize(stmt);
-  return out;
+  sqlite3_finalize(s);
+  return result;
 }
 
-std::vector<ClassRelationRow> QueryClassRelations(sqlite3* db, const std::vector<int64_t>& class_ids) {
-  std::vector<ClassRelationRow> out;
-  if (!db || class_ids.empty()) return out;
-  std::string placeholders;
-  for (size_t i = 0; i < class_ids.size(); ++i) placeholders += (i ? ",?" : "?");
-  std::string sql = "SELECT e.parent_id,e.child_id,p.usr,c.usr,e.relation_type FROM class_relation e "
-                    "JOIN class p ON e.parent_id=p.id JOIN class c ON e.child_id=c.id "
-                    "WHERE e.parent_id IN (" + placeholders + ") OR e.child_id IN (" + placeholders + ")";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return out;
-  for (size_t i = 0; i < class_ids.size(); ++i) { sqlite3_bind_int64(stmt, static_cast<int>(i) + 1, class_ids[i]); }
-  for (size_t i = 0; i < class_ids.size(); ++i) { sqlite3_bind_int64(stmt, static_cast<int>(i + class_ids.size()) + 1, class_ids[i]); }
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    ClassRelationRow row;
-    row.parent_id = sqlite3_column_int64(stmt, 0);
-    row.child_id = sqlite3_column_int64(stmt, 1);
-    row.parent_usr = ColText(stmt, 2);
-    row.child_usr = ColText(stmt, 3);
-    row.relation_type = ColText(stmt, 4);
-    out.push_back(row);
+// ─── call graph BFS ───────────────────────────────────────────────────────────
+
+CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_name,
+                                const std::string& file_path, int depth) {
+  CallGraphResult res;
+  int64_t root_id = ResolveSymbolId(db, symbol_usr_or_name, file_path);
+  if (!root_id) return res;
+
+  std::unordered_map<int64_t, std::string> fc;
+  std::unordered_map<int64_t, QueryNode> node_map;
+  std::unordered_set<int64_t> visited;
+  std::unordered_set<int64_t> edge_set;
+
+  // BFS forward (callees) and backward (callers)
+  struct Work { int64_t id; int depth_remaining; };
+  std::queue<Work> q;
+  q.push({root_id, depth});
+  visited.insert(root_id);
+  node_map[root_id] = LoadSymbolNode(db, root_id, fc);
+
+  while (!q.empty()) {
+    auto [cur_id, rem] = q.front(); q.pop();
+    if (rem <= 0) continue;
+
+    // Forward: callees
+    {
+      sqlite3_stmt* s = nullptr;
+      sqlite3_prepare_v2(db,
+          "SELECT ce.id, ce.callee_id, ce.edge_type, ce.call_file_id, ce.call_line,"
+          " ce.call_column FROM call_edge ce WHERE ce.caller_id=?", -1, &s, nullptr);
+      sqlite3_bind_int64(s, 1, cur_id);
+      while (sqlite3_step(s) == SQLITE_ROW) {
+        int64_t eid     = sqlite3_column_int64(s, 0);
+        int64_t callee  = sqlite3_column_int64(s, 1);
+        if (edge_set.count(eid)) continue;
+        edge_set.insert(eid);
+        if (!node_map.count(callee)) {
+          node_map[callee] = LoadSymbolNode(db, callee, fc);
+        }
+        QueryEdge e;
+        e.id        = eid;
+        e.from_id   = cur_id;
+        e.to_id     = callee;
+        e.edge_type = ColText(s, 2);
+        e.call_file = FilePath(db, sqlite3_column_int64(s, 3), fc);
+        e.call_line   = sqlite3_column_int(s, 4);
+        e.call_column = sqlite3_column_int(s, 5);
+        res.edges.push_back(e);
+        if (!visited.count(callee)) {
+          visited.insert(callee);
+          q.push({callee, rem - 1});
+        }
+      }
+      sqlite3_finalize(s);
+    }
+
+    // Backward: callers
+    {
+      sqlite3_stmt* s = nullptr;
+      sqlite3_prepare_v2(db,
+          "SELECT ce.id, ce.caller_id, ce.edge_type, ce.call_file_id, ce.call_line,"
+          " ce.call_column FROM call_edge ce WHERE ce.callee_id=?", -1, &s, nullptr);
+      sqlite3_bind_int64(s, 1, cur_id);
+      while (sqlite3_step(s) == SQLITE_ROW) {
+        int64_t eid    = sqlite3_column_int64(s, 0);
+        int64_t caller = sqlite3_column_int64(s, 1);
+        if (edge_set.count(eid)) continue;
+        edge_set.insert(eid);
+        if (!node_map.count(caller)) {
+          node_map[caller] = LoadSymbolNode(db, caller, fc);
+        }
+        QueryEdge e;
+        e.id        = eid;
+        e.from_id   = caller;
+        e.to_id     = cur_id;
+        e.edge_type = ColText(s, 2);
+        e.call_file = FilePath(db, sqlite3_column_int64(s, 3), fc);
+        e.call_line   = sqlite3_column_int(s, 4);
+        e.call_column = sqlite3_column_int(s, 5);
+        res.edges.push_back(e);
+        if (!visited.count(caller)) {
+          visited.insert(caller);
+          q.push({caller, rem - 1});
+        }
+      }
+      sqlite3_finalize(s);
+    }
   }
-  sqlite3_finalize(stmt);
-  return out;
+
+  res.nodes.reserve(node_map.size());
+  for (auto& [k, v] : node_map) res.nodes.push_back(v);
+  return res;
 }
 
-// --- global_var / data_flow ---
-GlobalVarRow QueryGlobalVarByUsr(sqlite3* db, const std::string& usr) {
-  GlobalVarRow r;
-  if (!db) return r;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,usr,def_file_id,def_line,def_column,def_line_end,def_column_end,file_id,name FROM global_var WHERE usr = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return r;
-  sqlite3_bind_text(stmt, 1, usr.c_str(), -1, SQLITE_TRANSIENT);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    r.id = sqlite3_column_int64(stmt, 0);
-    r.usr = ColText(stmt, 1);
-    r.def_file_id = sqlite3_column_int64(stmt, 2);
-    r.def_line = sqlite3_column_int(stmt, 3);
-    r.def_column = sqlite3_column_int(stmt, 4);
-    r.def_line_end = sqlite3_column_int(stmt, 5);
-    r.def_column_end = sqlite3_column_int(stmt, 6);
-    r.file_id = sqlite3_column_int64(stmt, 7);
-    r.name = ColText(stmt, 8);
-    r.def_file_path = QueryFilePath(db, r.def_file_id);
+// ─── class graph ──────────────────────────────────────────────────────────────
+
+static int64_t ResolveClassId(sqlite3* db, const std::string& usr_or_name,
+                               const std::string& file_path) {
+  if (usr_or_name.empty()) return 0;
+  if (usr_or_name.size() > 2 && usr_or_name[0] == 'c' && usr_or_name[1] == ':') {
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db, "SELECT id FROM class WHERE usr=?", -1, &s, nullptr);
+    BindText(s, 1, usr_or_name);
+    int64_t id = 0;
+    if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    if (id) return id;
   }
-  sqlite3_finalize(stmt);
-  return r;
+  const char* sql = file_path.empty()
+      ? "SELECT c.id FROM class c WHERE c.name=? LIMIT 1"
+      : "SELECT c.id FROM class c JOIN file f ON c.def_file_id=f.id"
+        " WHERE c.name=? AND f.path LIKE ? LIMIT 1";
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+  BindText(s, 1, usr_or_name);
+  if (!file_path.empty()) BindText(s, 2, "%" + file_path + "%");
+  int64_t id = 0;
+  if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
+  sqlite3_finalize(s);
+  return id;
 }
 
-std::vector<GlobalVarRow> QueryGlobalVarsByFile(sqlite3* db, int64_t file_id) {
-  std::vector<GlobalVarRow> out;
-  if (!db) return out;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,usr,def_file_id,def_line,def_column,def_line_end,def_column_end,file_id,name FROM global_var WHERE file_id = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return out;
-  sqlite3_bind_int64(stmt, 1, file_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    GlobalVarRow r;
-    r.id = sqlite3_column_int64(stmt, 0);
-    r.usr = ColText(stmt, 1);
-    r.def_file_id = sqlite3_column_int64(stmt, 2);
-    r.def_line = sqlite3_column_int(stmt, 3);
-    r.def_column = sqlite3_column_int(stmt, 4);
-    r.def_line_end = sqlite3_column_int(stmt, 5);
-    r.def_column_end = sqlite3_column_int(stmt, 6);
-    r.file_id = sqlite3_column_int64(stmt, 7);
-    r.name = ColText(stmt, 8);
-    r.def_file_path = QueryFilePath(db, r.def_file_id);
-    out.push_back(r);
+static ClassQueryNode LoadClassNode(sqlite3* db, int64_t cls_id,
+                                     std::unordered_map<int64_t, std::string>& fc) {
+  ClassQueryNode n{};
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db,
+      "SELECT id,usr,name,qualified_name,def_file_id,def_line,def_column,"
+      "def_line_end,def_col_end FROM class WHERE id=?", -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, cls_id);
+  if (sqlite3_step(s) == SQLITE_ROW) {
+    n.id             = sqlite3_column_int64(s, 0);
+    n.usr            = ColText(s, 1);
+    n.name           = ColText(s, 2);
+    n.qualified_name = ColText(s, 3);
+    n.def_file       = FilePath(db, sqlite3_column_int64(s, 4), fc);
+    n.def_line       = sqlite3_column_int(s, 5);
+    n.def_column     = sqlite3_column_int(s, 6);
+    n.def_line_end   = sqlite3_column_int(s, 7);
+    n.def_col_end    = sqlite3_column_int(s, 8);
   }
-  sqlite3_finalize(stmt);
-  return out;
+  sqlite3_finalize(s);
+  return n;
 }
 
-std::vector<DataFlowEdgeRow> QueryDataFlowEdgesByVar(sqlite3* db, int64_t var_id) {
-  std::vector<DataFlowEdgeRow> out;
-  if (!db) return out;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT e.var_id,e.reader_id,e.writer_id,g.usr,s1.usr,s2.usr FROM data_flow_edge e "
-                             "JOIN global_var g ON e.var_id=g.id LEFT JOIN symbol s1 ON e.reader_id=s1.id LEFT JOIN symbol s2 ON e.writer_id=s2.id WHERE e.var_id = ?", -1, &stmt, nullptr) != SQLITE_OK)
-    return out;
-  sqlite3_bind_int64(stmt, 1, var_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    DataFlowEdgeRow row;
-    row.var_id = sqlite3_column_int64(stmt, 0);
-    row.reader_id = sqlite3_column_int64(stmt, 1);
-    row.writer_id = sqlite3_column_int64(stmt, 2);
-    row.var_usr = ColText(stmt, 3);
-    row.reader_usr = ColText(stmt, 4);
-    row.writer_usr = ColText(stmt, 5);
-    out.push_back(row);
+ClassGraphResult QueryClassGraph(sqlite3* db, const std::string& symbol_usr_or_name,
+                                  const std::string& file_path) {
+  ClassGraphResult res;
+  int64_t root_id = ResolveClassId(db, symbol_usr_or_name, file_path);
+  if (!root_id) return res;
+
+  std::unordered_map<int64_t, std::string> fc;
+  std::unordered_map<int64_t, ClassQueryNode> node_map;
+  std::unordered_set<int64_t> visited;
+
+  std::queue<int64_t> q;
+  q.push(root_id);
+  visited.insert(root_id);
+  node_map[root_id] = LoadClassNode(db, root_id, fc);
+
+  while (!q.empty()) {
+    int64_t cur = q.front(); q.pop();
+    // Relations where cur is parent or child
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT parent_id, child_id, relation_type FROM class_relation"
+        " WHERE parent_id=? OR child_id=?", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, cur);
+    sqlite3_bind_int64(s, 2, cur);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+      int64_t pid = sqlite3_column_int64(s, 0);
+      int64_t cid = sqlite3_column_int64(s, 1);
+      ClassQueryEdge e{pid, cid, ColText(s, 2)};
+      res.edges.push_back(e);
+      for (int64_t nid : {pid, cid}) {
+        if (!visited.count(nid)) {
+          visited.insert(nid);
+          node_map[nid] = LoadClassNode(db, nid, fc);
+          q.push(nid);
+        }
+      }
+    }
+    sqlite3_finalize(s);
   }
-  sqlite3_finalize(stmt);
-  return out;
+
+  res.nodes.reserve(node_map.size());
+  for (auto& [k, v] : node_map) res.nodes.push_back(v);
+  return res;
 }
 
-// --- cfg ---
-std::vector<CfgNodeRow> QueryCfgNodesBySymbolId(sqlite3* db, int64_t symbol_id) {
-  std::vector<CfgNodeRow> out;
-  if (!db) return out;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "SELECT id,symbol_id,block_id,kind,file_id,line,column FROM cfg_node WHERE symbol_id = ? ORDER BY id", -1, &stmt, nullptr) != SQLITE_OK)
-    return out;
-  sqlite3_bind_int64(stmt, 1, symbol_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    CfgNodeRow r;
-    r.id = sqlite3_column_int64(stmt, 0);
-    r.symbol_id = sqlite3_column_int64(stmt, 1);
-    r.block_id = ColText(stmt, 2);
-    r.kind = ColText(stmt, 3);
-    r.file_id = sqlite3_column_int64(stmt, 4);
-    r.line = sqlite3_column_int(stmt, 5);
-    r.column = sqlite3_column_int(stmt, 6);
-    r.file_path = QueryFilePath(db, r.file_id);
-    out.push_back(r);
+// ─── data flow ────────────────────────────────────────────────────────────────
+
+DataFlowResult QueryDataFlow(sqlite3* db, const std::string& symbol_usr_or_name,
+                              const std::string& file_path) {
+  DataFlowResult res{};
+  std::unordered_map<int64_t, std::string> fc;
+
+  // Find global_var
+  const char* var_sql = symbol_usr_or_name.size() > 2 && symbol_usr_or_name[0] == 'c'
+      ? "SELECT id,usr,name,def_file_id,def_line,def_column FROM global_var WHERE usr=?"
+      : (file_path.empty()
+         ? "SELECT id,usr,name,def_file_id,def_line,def_column FROM global_var"
+           " WHERE name=? LIMIT 1"
+         : "SELECT gv.id,gv.usr,gv.name,gv.def_file_id,gv.def_line,gv.def_column"
+           " FROM global_var gv JOIN file f ON gv.def_file_id=f.id"
+           " WHERE gv.name=? AND f.path LIKE ? LIMIT 1");
+  sqlite3_stmt* s = nullptr;
+  sqlite3_prepare_v2(db, var_sql, -1, &s, nullptr);
+  BindText(s, 1, symbol_usr_or_name);
+  if (!file_path.empty() && !(symbol_usr_or_name.size() > 2 && symbol_usr_or_name[0] == 'c'))
+    BindText(s, 2, "%" + file_path + "%");
+  if (sqlite3_step(s) == SQLITE_ROW) {
+    res.var.id        = sqlite3_column_int64(s, 0);
+    res.var.usr       = ColText(s, 1);
+    res.var.name      = ColText(s, 2);
+    res.var.def_file  = FilePath(db, sqlite3_column_int64(s, 3), fc);
+    res.var.def_line  = sqlite3_column_int(s, 4);
+    res.var.def_column = sqlite3_column_int(s, 5);
   }
-  sqlite3_finalize(stmt);
-  return out;
+  sqlite3_finalize(s);
+  if (!res.var.id) return res;
+
+  // Load edges
+  sqlite3_prepare_v2(db,
+      "SELECT dfe.accessor_id, sym.name, dfe.access_type, dfe.access_file_id,"
+      " dfe.access_line, dfe.access_column FROM data_flow_edge dfe"
+      " JOIN symbol sym ON dfe.accessor_id=sym.id WHERE dfe.var_id=?",
+      -1, &s, nullptr);
+  sqlite3_bind_int64(s, 1, res.var.id);
+  while (sqlite3_step(s) == SQLITE_ROW) {
+    DataFlowEdge e;
+    e.accessor_id   = sqlite3_column_int64(s, 0);
+    e.accessor_name = ColText(s, 1);
+    e.access_type   = ColText(s, 2);
+    e.access_file   = FilePath(db, sqlite3_column_int64(s, 3), fc);
+    e.access_line   = sqlite3_column_int(s, 4);
+    e.access_column = sqlite3_column_int(s, 5);
+    res.edges.push_back(e);
+  }
+  sqlite3_finalize(s);
+  return res;
 }
 
-std::vector<CfgEdgeRow> QueryCfgEdgesByFromNodeIds(sqlite3* db, const std::vector<int64_t>& node_ids) {
-  std::vector<CfgEdgeRow> out;
-  if (!db || node_ids.empty()) return out;
-  std::string placeholders;
-  for (size_t i = 0; i < node_ids.size(); ++i) placeholders += (i ? ",?" : "?");
-  std::string sql = "SELECT from_node_id,to_node_id,edge_type FROM cfg_edge WHERE from_node_id IN (" + placeholders + ")";
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return out;
-  for (size_t i = 0; i < node_ids.size(); ++i) sqlite3_bind_int64(stmt, static_cast<int>(i) + 1, node_ids[i]);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    CfgEdgeRow row;
-    row.from_node_id = sqlite3_column_int64(stmt, 0);
-    row.to_node_id = sqlite3_column_int64(stmt, 1);
-    row.edge_type = ColText(stmt, 2);
-    out.push_back(row);
+// ─── control flow ─────────────────────────────────────────────────────────────
+// 从 cfg_index 查询 pb 文件路径，读取并反序列化 FunctionCfg protobuf 消息。
+
+ControlFlowResult QueryControlFlow(sqlite3* db, const std::string& db_dir,
+                                    const std::string& symbol_usr_or_name,
+                                    const std::string& file_path) {
+  ControlFlowResult res;
+  int64_t sym_id = ResolveSymbolId(db, symbol_usr_or_name, file_path);
+  if (!sym_id) return res;
+
+  // 查询 cfg_index 表获取 pb 文件相对路径
+  std::string pb_path;
+  {
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT pb_path FROM cfg_index WHERE symbol_id=?", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, sym_id);
+    if (sqlite3_step(s) == SQLITE_ROW) pb_path = ColText(s, 0);
+    sqlite3_finalize(s);
   }
-  sqlite3_finalize(stmt);
-  return out;
+  if (pb_path.empty()) return res;
+
+  // 构造绝对路径并读取 pb 文件
+  std::string abs_path = db_dir + "/" + pb_path;
+  std::ifstream ifs(abs_path, std::ios::binary);
+  if (!ifs) {
+    LogError("QueryControlFlow: cannot open " + abs_path);
+    return res;
+  }
+  std::string data((std::istreambuf_iterator<char>(ifs)),
+                   std::istreambuf_iterator<char>());
+
+  // 反序列化 FunctionCfg
+  codexray::cfg::FunctionCfg proto;
+  if (!proto.ParseFromString(data)) {
+    LogError("QueryControlFlow: ParseFromString failed for " + abs_path);
+    return res;
+  }
+
+  // 转换节点：id 和 block_id 都使用 block_id（前端依赖整数 ID 识别节点）
+  for (const auto& pn : proto.nodes()) {
+    CfgNodeQ n;
+    n.id         = pn.block_id();
+    n.block_id   = pn.block_id();
+    n.file       = pn.file_path();
+    n.begin_line = pn.begin_line();
+    n.begin_col  = pn.begin_col();
+    n.end_line   = pn.end_line();
+    n.end_col    = pn.end_col();
+    n.label      = pn.label();
+    res.nodes.push_back(n);
+  }
+
+  // 转换边：from/to 使用 block_id
+  for (const auto& pe : proto.edges()) {
+    CfgEdgeQ e;
+    e.from_node_id = pe.from_block();
+    e.to_node_id   = pe.to_block();
+    e.edge_type    = pe.edge_type();
+    res.edges.push_back(e);
+  }
+
+  return res;
+}
+
+// ─── symbol_at ────────────────────────────────────────────────────────────────
+
+std::vector<QueryNode> QuerySymbolsAt(sqlite3* db, int64_t project_id,
+                                       const std::string& file_path,
+                                       int line, int column) {
+  std::vector<QueryNode> result;
+  std::unordered_map<int64_t, std::string> fc;
+  int64_t fid = QueryFileIdByPath(db, project_id, file_path);
+  if (!fid) {
+    // Try without project filter
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db, "SELECT id FROM file WHERE path=? LIMIT 1", -1, &s, nullptr);
+    BindText(s, 1, file_path);
+    if (sqlite3_step(s) == SQLITE_ROW) fid = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+  }
+  if (!fid) return result;
+  auto rows = QuerySymbolsByFileAndLine(db, fid, line, column);
+  for (const auto& r : rows) {
+    QueryNode n;
+    n.usr            = r.usr;
+    n.name           = r.name;
+    n.qualified_name = r.qualified_name;
+    n.kind           = r.kind;
+    n.def_file       = QueryFilePathById(db, r.def_file_id);
+    n.def_line       = r.def_line;
+    n.def_column     = r.def_column;
+    n.def_line_end   = r.def_line_end;
+    n.def_col_end    = r.def_col_end;
+    // Get DB id
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db, "SELECT id FROM symbol WHERE usr=?", -1, &s, nullptr);
+    BindText(s, 1, r.usr);
+    if (sqlite3_step(s) == SQLITE_ROW) n.id = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    result.push_back(n);
+  }
+  return result;
 }
 
 }  // namespace codexray

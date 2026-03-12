@@ -95,6 +95,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
     }
     // Delete old data for changed files
     DbWriter writer(conn.Get(), project_id);
+    writer.SetDbDir(fs::path(db_path).parent_path().string());
     conn.BeginTransaction();
     for (const auto& cf : changed) {
       int64_t fid = cf.file_id;
@@ -120,6 +121,8 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   };
 
   DbWriter writer(conn.Get(), project_id);
+  // 设置 db_dir，供 WriteCfg 写 protobuf 文件时确定 cfg/ 子目录位置
+  writer.SetDbDir(fs::path(db_path).parent_path().string());
   std::atomic<int> write_errors{0};
 
   // on_result 在持有 result_mu 的情况下串行调用，可安全写 DB
@@ -219,6 +222,7 @@ int ParseOnDemandForQuery(const std::string& project_root,
   };
 
   DbWriter writer(conn.Get(), project_id);
+  writer.SetDbDir(fs::path(db_path).parent_path().string());
   std::atomic<int> write_errors{0};
 
   auto on_result = [&](const TUEntry& tu, CombinedOutput& out, bool ok) {

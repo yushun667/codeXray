@@ -1,30 +1,44 @@
 /**
- * 解析引擎 query：四种类型 JSON 输出
- * 参考：doc/01-解析引擎 接口约定 §3
+ * 查询 JSON 输出：将 db/reader 结果组装为接口约定 §3 规定的 JSON。
  */
-
-#ifndef CODEXRAY_PARSER_QUERY_JSON_OUTPUT_H_
-#define CODEXRAY_PARSER_QUERY_JSON_OUTPUT_H_
-
+#pragma once
+#include "db/reader/reader.h"
+#include <sqlite3.h>
 #include <string>
-
-struct sqlite3;
 
 namespace codexray {
 
-std::string QueryCallGraphJson(sqlite3* db, const std::string& symbol,
-                               const std::string& file, int depth);
-std::string QueryClassGraphJson(sqlite3* db, const std::string& symbol,
-                                const std::string& file);
-std::string QueryDataFlowJson(sqlite3* db, const std::string& symbol,
-                              const std::string& file);
-std::string QueryControlFlowJson(sqlite3* db, const std::string& symbol,
-                                 const std::string& file);
+// Query options (filled by CLI layer)
+struct QueryOptions {
+  std::string db_path;
+  std::string project_root;
+  std::string query_type;   // call_graph | class_graph | data_flow | control_flow | symbol_at
+  std::string symbol;       // USR or name
+  std::string file_path;
+  int         line   = 0;
+  int         column = 0;
+  int         depth  = 3;
+  bool        lazy   = false;
+  bool        verbose = false;
+  unsigned    parallel = 0;
+  std::vector<std::string> priority_dirs;
+};
 
-/** 按文件+行号查询符号，返回 JSON 数组（含 definition/declaration 与 USR） */
+std::string QueryCallGraphJson(sqlite3* db, const std::string& symbol,
+                                const std::string& file_path, int depth);
+
+std::string QueryClassGraphJson(sqlite3* db, const std::string& symbol,
+                                 const std::string& file_path);
+
+std::string QueryDataFlowJson(sqlite3* db, const std::string& symbol,
+                               const std::string& file_path);
+
+std::string QueryControlFlowJson(sqlite3* db, const std::string& db_dir,
+                                  const std::string& symbol,
+                                  const std::string& file_path);
+
 std::string QuerySymbolAtLocationJson(sqlite3* db, int64_t project_id,
-                                      const std::string& file_path, int line, int column);
+                                       const std::string& file_path,
+                                       int line, int column);
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_QUERY_JSON_OUTPUT_H_

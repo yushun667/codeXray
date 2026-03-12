@@ -1,116 +1,78 @@
 /**
- * 解析引擎 DB writer：symbol/call_edge/class/global_var/cfg 写入
- * 参考：doc/01-解析引擎 数据库设计 §2、解析引擎详细功能与架构设计 §4.11
+ * DB 写入器：批量写入解析结果；维护 USR→ID 和 path→ID 缓存。
+ * 设计 §3.13 / §5.4。
+ * CFG 数据以 protobuf 文件存储，不写入 SQLite 行存储。
  */
-
-#ifndef CODEXRAY_PARSER_DB_WRITER_WRITER_H_
-#define CODEXRAY_PARSER_DB_WRITER_WRITER_H_
-
-#include "ast/class_relation/action.h"
-#include "ast/data_flow/action.h"
-#include "ast/control_flow/action.h"
+#pragma once
+#include "common/analysis_output.h"
+#include <sqlite3.h>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-struct sqlite3;
+#include <shared_mutex>
 
 namespace codexray {
 
-struct SymbolRecord {
-  std::string usr;
-  std::string name;
-  std::string qualified_name;
-  std::string kind;
-  int64_t def_file_id = 0;
-  int def_line = 0;
-  int def_column = 0;
-  int def_line_end = 0;
-  int def_column_end = 0;
-  int64_t decl_file_id = 0;
-  int decl_line = 0;
-  int decl_column = 0;
-  int decl_line_end = 0;
-  int decl_column_end = 0;
-  /** 解析时：定义/声明是否位于当前 TU 主文件，供 driver 填 def_file_id/decl_file_id */
-  bool def_in_tu_file = false;
-  bool decl_in_tu_file = false;
-};
+class DbWriter {
+public:
+  explicit DbWriter(sqlite3* db, int64_t project_id);
 
-struct CallEdgeRecord {
-  std::string caller_usr;
-  std::string callee_usr;
-  int64_t call_site_file_id = 0;
-  int call_site_line = 0;
-  int call_site_column = 0;
-  std::string edge_type;  // "direct" | "via_function_pointer" | "constructor" | "destructor" | "virtual" | "cuda_kernel"
-};
+  // 设置数据库目录（CFG pb 文件存储于 <db_dir>/cfg/）
+  void SetDbDir(const std::string& db_dir);
 
-class DBWriter {
- public:
-  explicit DBWriter(sqlite3* db);
-  ~DBWriter() = default;
+  // 预注册文件路径，返回 file_id（如已存在直接返回）
+  int64_t EnsureFile(const std::string& path);
 
-  /** 获取或插入 project，返回 project_id */
-  int64_t EnsureProject(const std::string& root_path,
-                        const std::string& compile_commands_path);
+  // 写入全部聚合输出（在单个大事务中执行）
+  bool WriteAll(const CombinedOutput& out);
 
-  /** 获取或插入 file，返回 file_id */
-  int64_t EnsureFile(int64_t project_id, const std::string& path);
+  // 更新 parsed_file 表（parse 完成后调用）
+  bool UpdateParsedFile(int64_t file_id, int64_t parse_run_id,
+                        int64_t mtime, const std::string& hash);
 
-  /** 批量插入 symbol，返回 usr -> id 映射 */
-  std::unordered_map<std::string, int64_t> WriteSymbols(
-      int64_t project_id,
-      const std::vector<SymbolRecord>& symbols);
+  // 删除某文件的所有旧数据（增量更新前）
+  bool DeleteDataForFile(int64_t file_id);
 
-  /** 写入调用边（caller/callee 以 USR 标识，内部解析为 id；缺失则插入占位 symbol） */
-  bool WriteCallEdges(int64_t project_id,
-                      const std::vector<CallEdgeRecord>& edges,
-                      const std::unordered_map<std::string, int64_t>& usr_to_id);
+  // 查 symbol_id by USR（先查缓存，再查 DB）
+  int64_t GetOrInsertSymbolId(const SymbolRow& row);
 
-  /** 批量插入 class，返回 usr -> class id 映射 */
-  std::unordered_map<std::string, int64_t> WriteClasses(
-      int64_t project_id,
-      const std::vector<ClassRecord>& classes);
+  // 查 global_var_id by USR
+  int64_t GetOrInsertGlobalVarId(const GlobalVarRow& row);
 
-  /** 写入类关系边（parent_usr/child_usr 由 class_usr_to_id 解析为 id；缺失则跳过该条） */
-  bool WriteClassRelations(int64_t project_id,
-                           const std::vector<ClassRelationRecord>& relations,
-                           const std::unordered_map<std::string, int64_t>& class_usr_to_id);
+  // 查 class_id by USR
+  int64_t GetOrInsertClassId(const ClassRow& row);
 
-  /** 批量插入 global_var，返回 usr -> global_var id 映射 */
-  std::unordered_map<std::string, int64_t> WriteGlobalVars(
-      int64_t project_id,
-      const std::vector<GlobalVarRecord>& global_vars);
+  sqlite3* Db() const { return db_; }
+  int64_t  ProjectId() const { return project_id_; }
 
-  /** 写入数据流边（var_usr/reader_usr/writer_usr 由传入映射解析为 id；缺失则跳过） */
-  bool WriteDataFlowEdges(int64_t project_id,
-                          const std::vector<DataFlowEdgeRecord>& edges,
-                          const std::unordered_map<std::string, int64_t>& var_usr_to_id,
-                          const std::unordered_map<std::string, int64_t>& symbol_usr_to_id);
+private:
+  bool WriteSymbols(const std::vector<SymbolRow>& rows);
+  bool WriteCallEdges(const std::vector<CallEdgeRow>& rows);
+  bool WriteClasses(const std::vector<ClassRow>& rows);
+  bool WriteClassRelations(const std::vector<ClassRelationRow>& rows);
+  bool WriteClassMembers(const std::vector<ClassMemberRow>& rows);
+  bool WriteGlobalVars(const std::vector<GlobalVarRow>& rows);
+  bool WriteDataFlowEdges(const std::vector<DataFlowEdgeRow>& rows);
+  // 将 cfg_nodes/cfg_edges 序列化为 pb 文件，并更新 cfg_index 表
+  bool WriteCfg(const std::vector<CfgNodeRow>& nodes,
+                const std::vector<CfgEdgeRow>& edges);
 
-  /** 批量插入 cfg_node，nodes 与 symbol_usr_to_id 解析 symbol_usr→symbol_id；返回与 nodes 同序的 node id 列表 */
-  std::vector<int64_t> WriteCfgNodes(int64_t project_id,
-                                     const std::vector<CfgNodeRecord>& nodes,
-                                     const std::unordered_map<std::string, int64_t>& symbol_usr_to_id);
+  sqlite3* db_;
+  int64_t  project_id_;
+  std::string db_dir_;  // 数据库目录，用于定位 cfg/ 子目录
 
-  /** 写入控制流边，from_node_index/to_node_index 为 node_ids 的下标 */
-  bool WriteCfgEdges(int64_t project_id,
-                     const std::vector<CfgEdgeRecord>& edges,
-                     const std::vector<int64_t>& node_ids);
+  mutable std::shared_mutex usr_sym_mu_;
+  std::unordered_map<std::string, int64_t> usr_sym_cache_;
 
-  /** 记录已解析文件（用于增量与懒解析） */
-  bool UpdateParsedFile(int64_t project_id, int64_t file_id, int64_t parse_run_id,
-                        int64_t file_mtime, const std::string& content_hash);
+  mutable std::shared_mutex usr_gv_mu_;
+  std::unordered_map<std::string, int64_t> usr_gv_cache_;
 
-  /** 按 file 删除该文件相关的 symbol/call_edge/class/global_var/cfg 等（供 incremental 调用） */
-  bool DeleteDataForFile(int64_t project_id, int64_t file_id);
+  mutable std::shared_mutex usr_cls_mu_;
+  std::unordered_map<std::string, int64_t> usr_cls_cache_;
 
- private:
-  sqlite3* db_ = nullptr;
+  mutable std::shared_mutex file_mu_;
+  std::unordered_map<std::string, int64_t> file_cache_;
 };
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_DB_WRITER_WRITER_H_

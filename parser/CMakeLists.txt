@@ -55,6 +55,15 @@ if(NOT JSON_INCLUDE_DIR)
 endif()
 set(JSON_INCLUDE_DIRS ${JSON_INCLUDE_DIR})
 
+# Protobuf（必需，CFG 数据二进制存储）
+find_package(Protobuf REQUIRED)
+message(STATUS "Protobuf found: ${Protobuf_VERSION}, libs: ${Protobuf_LIBRARIES}")
+
+# 生成 proto C++ 代码
+file(GLOB PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/*.proto)
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
+message(STATUS "Proto generated sources: ${PROTO_SRCS}")
+
 # 可执行体
 add_executable(codexray-parser
   src/main.cc
@@ -79,28 +88,17 @@ add_executable(codexray-parser
   src/driver/orchestrator.cc
   src/query/json_output.cc
   src/cli/parse_args.cc
-  # src/db/schema.cc
-  # src/compile_commands/load.cc
-  # src/db/writer/...
-  # src/db/reader/...
-  # src/history/...
-  # src/incremental/...
-  # src/scheduler/pool.cc
-  # src/ast/call_graph/...
-  # src/ast/function_pointer/...
-  # src/ast/class_relation/...
-  # src/ast/data_flow/...
-  # src/ast/control_flow/...
-  # src/driver/orchestrator.cc
-  # src/query/...
-  # src/cli/parse_args.cc
+  ${PROTO_SRCS}  # 生成的 protobuf C++ 源文件
 )
+
 
 target_include_directories(codexray-parser PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${SQLite3_INCLUDE_DIRS}
+  ${Protobuf_INCLUDE_DIRS}
+  ${CMAKE_CURRENT_BINARY_DIR}  # 生成的 proto 头文件目录
 )
-target_link_libraries(codexray-parser PRIVATE ${SQLite3_LIBRARIES})
+target_link_libraries(codexray-parser PRIVATE ${SQLite3_LIBRARIES} ${Protobuf_LIBRARIES})
 
 if(LLVM_FOUND AND Clang_FOUND)
   llvm_map_components_to_libnames(llvm_libs support core)
