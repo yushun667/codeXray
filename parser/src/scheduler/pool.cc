@@ -825,28 +825,53 @@ static RunResult RunScheduledPreFork(
   for (auto& w : worker_procs) ShutdownWorker(w);
   int64_t total_ms = ms_since();
 
-  // ── Profiling 输出 ──────────────────────────────────────────────────
-  LogInfo("=== PROFILING SUMMARY (T+" + std::to_string(total_ms) + "ms) ===");
-  LogInfo("Analysis done at T+" + std::to_string(analysis_done_ms) + "ms, "
-          "workers shutdown at T+" + std::to_string(total_ms) + "ms");
+  // ── Profiling 输出（始终输出到 stderr，不受 verbose 控制）─────────
+  auto logP = [](const std::string& msg) { fprintf(stderr, "%s\n", msg.c_str()); };
+  logP("╔══════════════════════════════════════════════════════════╗");
+  logP("║            SCHEDULER PROFILING SUMMARY                  ║");
+  logP("╠══════════════════════════════════════════════════════════╣");
+  logP("║ Analysis done at T+" + std::to_string(analysis_done_ms) + "ms, "
+          "total T+" + std::to_string(total_ms) + "ms");
+
+  // 汇总所有线程的统计
+  uint64_t sum_ser = 0, sum_write = 0, sum_wait = 0, sum_deser = 0;
+  uint64_t sum_enqueue = 0, sum_resp = 0;
+  int sum_tu = 0;
   for (unsigned t = 0; t < par; ++t) {
     auto& s = thread_stats[t];
-    LogInfo("Thread " + std::to_string(t) +
+    sum_ser += s.serialize_us; sum_write += s.write_us;
+    sum_wait += s.wait_us; sum_deser += s.deser_us;
+    sum_enqueue += s.enqueue_us; sum_resp += s.resp_bytes;
+    sum_tu += s.tu_count;
+  }
+  logP("║ Workers: " + std::to_string(par) +
+          "  TUs: " + std::to_string(sum_tu) +
+          "  resp: " + std::to_string(sum_resp / 1024) + "KB");
+  logP("║ [per-thread avg] ser=" + std::to_string(sum_ser / par / 1000) +
+          "ms  write=" + std::to_string(sum_write / par / 1000) +
+          "ms  wait=" + std::to_string(sum_wait / par / 1000) +
+          "ms  deser=" + std::to_string(sum_deser / par / 1000) +
+          "ms  enq=" + std::to_string(sum_enqueue / par / 1000) + "ms");
+
+  for (unsigned t = 0; t < par; ++t) {
+    auto& s = thread_stats[t];
+    logP("║ Thread " + std::to_string(t) +
             ": TUs=" + std::to_string(s.tu_count) +
             " total=" + std::to_string(s.total_us / 1000) + "ms" +
             " ser=" + std::to_string(s.serialize_us / 1000) + "ms" +
             " write=" + std::to_string(s.write_us / 1000) + "ms" +
             " wait=" + std::to_string(s.wait_us / 1000) + "ms" +
             " deser=" + std::to_string(s.deser_us / 1000) + "ms" +
-            " enqueue=" + std::to_string(s.enqueue_us / 1000) + "ms" +
+            " enq=" + std::to_string(s.enqueue_us / 1000) + "ms" +
             " resp=" + std::to_string(s.resp_bytes / 1024) + "KB");
   }
-  LogInfo("WriterThread: work=" + std::to_string(writer_stats.total_us / 1000) + "ms" +
+  logP("║ WriterThread: work=" + std::to_string(writer_stats.total_us / 1000) + "ms" +
           " wait=" + std::to_string(writer_stats.wait_us / 1000) + "ms" +
           " TUs=" + std::to_string(writer_stats.tu_count));
+  logP("╚══════════════════════════════════════════════════════════╝");
 
   result.failed_count = failed.load();
-  LogInfo("Scheduler (pre-fork) done: " + std::to_string(total - result.failed_count) +
+  logP("Scheduler (pre-fork) done: " + std::to_string(total - result.failed_count) +
           "/" + std::to_string(total) + " succeeded");
   return result;
 }

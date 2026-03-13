@@ -39,10 +39,18 @@ static std::string ResolveCCPath(const ParseOptions& opts) {
 // ─── RunParse ────────────────────────────────────────────────────────────────
 
 int RunParse(const ParseOptions& opts, ParseSummary* summary) {
+  // ── 端到端耗时测量：记录每个阶段的开始/结束时间 ──────────────────────
+  auto now_ms = []() -> int64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  };
+  int64_t t_start = now_ms();
+
   // Resolve paths
   std::string cc_path = ResolveCCPath(opts);
   std::string db_path = ResolveDbPath(opts);
   std::string proj_root = NormalizePath(opts.project_root);
+  int64_t t_resolve = now_ms();
 
   // Load compile_commands
   auto cc = LoadCompileCommands(cc_path, proj_root, opts.priority_dirs);
@@ -50,6 +58,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
     LogError("compile_commands: " + cc.error);
     return static_cast<int>(ExitCode::kCompileCommands);
   }
+  int64_t t_load_cc = now_ms();
 
   // Determine parse mode and TU list
   bool is_incremental = opts.incremental;
@@ -59,6 +68,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   Connection conn;
   if (!conn.Open(db_path)) return static_cast<int>(ExitCode::kDbWriteFailed);
   if (!EnsureSchema(conn.Get())) return static_cast<int>(ExitCode::kDbWriteFailed);
+  int64_t t_db_open = now_ms();
 
   int64_t project_id = EnsureProjectId(conn.Get(), proj_root, cc_path);
 
@@ -107,6 +117,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   } else {
     tus_to_parse = candidate_tus;
   }
+  int64_t t_incr_check = now_ms();
 
   // Create parse_run record
   int64_t run_id = InsertParseRun(conn.Get(), project_id, mode);
@@ -188,6 +199,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
 
   auto result = RunScheduled(tus_to_parse, sched_cfg, run_one,
                              opts.progress_stdout, on_result);
+  int64_t t_analysis_done = now_ms();
 
   // 提交最后一个不完整批次（db_tu_count % BATCH_SIZE != 0 时事务仍处于打开状态）
   if (db_tu_count > 0 && db_tu_count % 16 != 0) {
@@ -195,17 +207,19 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
     conn.Commit();
     db_commit_us += (now_us() - tc);
   }
+  int64_t t_final_commit = now_ms();
 
-  // DB 写入 profiling 汇总
-  LogInfo("=== DB WRITE PROFILING ===");
-  LogInfo("DB TUs=" + std::to_string(db_tu_count) +
-          " begin=" + std::to_string(db_begin_us / 1000) + "ms" +
-          " writeAll=" + std::to_string(db_write_all_us / 1000) + "ms" +
-          " ensure=" + std::to_string(db_ensure_us / 1000) + "ms" +
-          " update=" + std::to_string(db_update_us / 1000) + "ms" +
-          " commit=" + std::to_string(db_commit_us / 1000) + "ms" +
-          " total=" + std::to_string((db_begin_us + db_write_all_us +
-                       db_ensure_us + db_update_us + db_commit_us) / 1000) + "ms");
+  // DB 写入 profiling 汇总（始终输出）
+  fprintf(stderr, "=== DB WRITE PROFILING ===\n");
+  fprintf(stderr, "DB TUs=%d begin=%lldms writeAll=%lldms ensure=%lldms update=%lldms commit=%lldms total=%lldms\n",
+          db_tu_count,
+          (long long)(db_begin_us / 1000),
+          (long long)(db_write_all_us / 1000),
+          (long long)(db_ensure_us / 1000),
+          (long long)(db_update_us / 1000),
+          (long long)(db_commit_us / 1000),
+          (long long)((db_begin_us + db_write_all_us +
+                       db_ensure_us + db_update_us + db_commit_us) / 1000));
 
   bool write_ok = (write_errors.load() == 0);
 
@@ -217,12 +231,55 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
     if (sqlite3_step(s) == SQLITE_ROW) sym_count = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
   }
+  int64_t t_count_sym = now_ms();
 
   int files_parsed = static_cast<int>(tus_to_parse.size()) - result.failed_count;
   UpdateParseRun(conn.Get(), run_id,
                  write_ok ? "completed" : "failed",
                  files_parsed, result.failed_count,
                  write_ok ? "" : "DB write error");
+  int64_t t_end = now_ms();
+
+  // ── 端到端耗时汇总（始终输出到 stderr，不受 verbose 控制）──────────
+  auto logP = [](const std::string& msg) { fprintf(stderr, "%s\n", msg.c_str()); };
+  logP("╔══════════════════════════════════════════════════════════╗");
+  logP("║            END-TO-END TIMING BREAKDOWN                  ║");
+  logP("╠══════════════════════════════════════════════════════════╣");
+  logP("║ [1] 路径解析               " +
+          std::to_string(t_resolve - t_start) + " ms");
+  logP("║ [2] 加载 compile_commands   " +
+          std::to_string(t_load_cc - t_resolve) + " ms  (" +
+          std::to_string(cc.priority.size() + cc.remainder.size()) + " TUs)");
+  logP("║ [3] 打开/初始化 DB          " +
+          std::to_string(t_db_open - t_load_cc) + " ms");
+  logP("║ [4] 增量检测/TU 筛选        " +
+          std::to_string(t_incr_check - t_db_open) + " ms  → " +
+          std::to_string(tus_to_parse.size()) + " TUs to parse");
+  logP("║ [5] 分析+DB写入 (RunScheduled) " +
+          std::to_string(t_analysis_done - t_incr_check) + " ms");
+  logP("║     ├─ 分析 (workers)       ≈ 见上方 worker-prof");
+  logP("║     └─ DB写入 (WriterThread) " +
+          std::to_string((db_begin_us + db_write_all_us +
+                         db_ensure_us + db_update_us + db_commit_us) / 1000) + " ms");
+  logP("║        ├─ WriteAll          " + std::to_string(db_write_all_us / 1000) + " ms");
+  logP("║        ├─ EnsureFile        " + std::to_string(db_ensure_us / 1000) + " ms");
+  logP("║        ├─ UpdateParsedFile  " + std::to_string(db_update_us / 1000) + " ms");
+  logP("║        └─ Commit (" + std::to_string(db_tu_count > 0 ? (db_tu_count + 15) / 16 : 0) +
+          "次)     " + std::to_string(db_commit_us / 1000) + " ms");
+  logP("║ [6] 最终 Commit             " +
+          std::to_string(t_final_commit - t_analysis_done) + " ms");
+  logP("║ [7] 统计 symbols            " +
+          std::to_string(t_count_sym - t_final_commit) + " ms  (" +
+          std::to_string(sym_count) + " symbols)");
+  logP("║ [8] 更新 parse_run          " +
+          std::to_string(t_end - t_count_sym) + " ms");
+  logP("╠══════════════════════════════════════════════════════════╣");
+  logP("║ TOTAL                       " +
+          std::to_string(t_end - t_start) + " ms");
+  logP("║ TUs parsed: " + std::to_string(files_parsed) +
+          "  failed: " + std::to_string(result.failed_count) +
+          "  symbols: " + std::to_string(sym_count));
+  logP("╚══════════════════════════════════════════════════════════╝");
 
   if (summary) {
     summary->run_id        = run_id;
