@@ -215,12 +215,24 @@ export function GraphPage() {
           // 标记查询入口节点（右键选中的那个函数），用于醒目颜色区分
           const qSym = (m as { querySymbol?: string }).querySymbol;
           if (qSym) {
+            // 优先精确匹配 name，其次匹配 label 首行包含 querySymbol
+            let matched = false;
             for (const nd of n) {
               const d = nd.data as FlowNodeData;
-              // 匹配：name 精确相等 或 qualified_name 以 querySymbol 结尾
               if (d.name === qSym) {
                 d.isRoot = true;
-                break; // 仅标记一个根节点
+                matched = true;
+                break;
+              }
+            }
+            if (!matched) {
+              for (const nd of n) {
+                const d = nd.data as FlowNodeData;
+                const firstLine = d.label.split('\n')[0] ?? '';
+                if (firstLine === qSym || firstLine.endsWith('::' + qSym)) {
+                  d.isRoot = true;
+                  break;
+                }
               }
             }
           }
