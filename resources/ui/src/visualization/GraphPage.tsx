@@ -213,28 +213,47 @@ export function GraphPage() {
             for (const nd of n) rootNodeIdsRef.current.add(nd.id);
           }
           // 标记查询入口节点（右键选中的那个函数），用于醒目颜色区分
+          // 策略：1) querySymbol name 精确匹配  2) label 首行匹配  3) 拓扑分析（入度+出度最高的节点）
           const qSym = (m as { querySymbol?: string }).querySymbol;
+          let rootFound = false;
           if (qSym) {
-            // 优先精确匹配 name，其次匹配 label 首行包含 querySymbol
-            let matched = false;
+            // 精确匹配 name
             for (const nd of n) {
               const d = nd.data as FlowNodeData;
               if (d.name === qSym) {
                 d.isRoot = true;
-                matched = true;
+                rootFound = true;
                 break;
               }
             }
-            if (!matched) {
+            // 回退：label 首行匹配
+            if (!rootFound) {
               for (const nd of n) {
                 const d = nd.data as FlowNodeData;
                 const firstLine = d.label.split('\n')[0] ?? '';
                 if (firstLine === qSym || firstLine.endsWith('::' + qSym)) {
                   d.isRoot = true;
+                  rootFound = true;
                   break;
                 }
               }
             }
+          }
+          // 终极回退：无 querySymbol 或匹配失败 → 拓扑分析，选度数最高的节点
+          if (!rootFound && n.length > 0 && e.length > 0) {
+            const degree = new Map<string, number>();
+            for (const nd of n) degree.set(nd.id, 0);
+            for (const edge of e) {
+              degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+              degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+            }
+            let maxDeg = 0;
+            let maxId = n[0].id;
+            for (const [id, deg] of degree) {
+              if (deg > maxDeg) { maxDeg = deg; maxId = id; }
+            }
+            const rootNd = n.find((nd) => nd.id === maxId);
+            if (rootNd) (rootNd.data as FlowNodeData).isRoot = true;
           }
           setNodes(n);
           setEdges(e);
