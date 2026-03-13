@@ -8,7 +8,7 @@
  * - edges 超过 MAX_EDGES → 顶部提示横幅
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Node, Edge } from 'reactflow';
 import type { GraphType, GraphData } from '../shared/types';
 import type { HostToGraphMessage } from '../shared/protocol';
@@ -68,6 +68,89 @@ function adaptAndLayout(
   return { nodes, edges, edgesTruncated };
 }
 
+/**
+ * 删除指定节点后清理孤立节点：
+ * 1. 移除 removeIds 中的节点及其关联边
+ * 2. 在剩余节点/边上做连通分量分析（无向图 BFS）
+ * 3. 保留包含 rootNodeIds 中任一节点的连通分量，移除其他孤立分量
+ *
+ * @param nodes 当前所有节点
+ * @param edges 当前所有边
+ * @param removeIds 要删除的节点 ID 集合
+ * @param rootNodeIds 查询根节点 ID 集合（不可被孤立清理删除）
+ */
+function removeNodesAndOrphans(
+  nodes: Node<FlowNodeData>[],
+  edges: Edge[],
+  removeIds: Set<string>,
+  rootNodeIds: Set<string>
+): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
+  // Step 1: 移除指定节点和关联边
+  const remainingNodes = nodes.filter((n) => !removeIds.has(n.id));
+  const remainingEdges = edges.filter(
+    (e) => !removeIds.has(e.source) && !removeIds.has(e.target)
+  );
+
+  if (remainingNodes.length === 0) return { nodes: [], edges: [] };
+
+  // Step 2: 构建无向邻接表
+  const adj = new Map<string, Set<string>>();
+  for (const n of remainingNodes) adj.set(n.id, new Set());
+  for (const e of remainingEdges) {
+    adj.get(e.source)?.add(e.target);
+    adj.get(e.target)?.add(e.source);
+  }
+
+  // Step 3: BFS 找所有连通分量
+  const visited = new Set<string>();
+  const components: Set<string>[] = [];
+  for (const n of remainingNodes) {
+    if (visited.has(n.id)) continue;
+    const comp = new Set<string>();
+    const queue = [n.id];
+    visited.add(n.id);
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      comp.add(cur);
+      for (const nb of adj.get(cur) ?? []) {
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+    components.push(comp);
+  }
+
+  // Step 4: 保留包含任一 root 节点的分量；若无 root 则保留最大分量
+  const keepIds = new Set<string>();
+  let hasRootComp = false;
+  for (const comp of components) {
+    for (const rid of rootNodeIds) {
+      if (comp.has(rid)) {
+        for (const id of comp) keepIds.add(id);
+        hasRootComp = true;
+        break;
+      }
+    }
+  }
+  if (!hasRootComp) {
+    // 回退：保留最大连通分量
+    let largest = components[0];
+    for (const comp of components) {
+      if (comp.size > largest.size) largest = comp;
+    }
+    for (const id of largest) keepIds.add(id);
+  }
+
+  return {
+    nodes: remainingNodes.filter((n) => keepIds.has(n.id)),
+    edges: remainingEdges.filter(
+      (e) => keepIds.has(e.source) && keepIds.has(e.target)
+    ),
+  };
+}
+
 export function GraphPage() {
   const [graphType, setGraphType] = useState<GraphType>('call_graph');
   const [ready, setReady] = useState(false);
@@ -85,12 +168,33 @@ export function GraphPage() {
     y: number;
   } | null>(null);
 
+  /** 查询根节点 ID 集合：首次 initGraph 时记录，用于孤立节点清理 */
+  const rootNodeIdsRef = useRef<Set<string>>(new Set());
+
   const applyData = useCallback((type: GraphType, data: GraphData) => {
     const { nodes: n, edges: e, edgesTruncated: trunc } = adaptAndLayout(type, data);
     setNodes(n);
     setEdges(e);
     setEdgesTruncated(trunc ?? null);
   }, []);
+
+  /**
+   * 统一的节点删除函数：删除指定节点 + 清理关联边 + 移除孤立节点
+   * 供右键单删、右键批量删、键盘删除三条路径共用
+   */
+  const deleteNodes = useCallback((idsToRemove: Set<string>) => {
+    setNodes((curNodes) => {
+      setEdges((curEdges) => {
+        const result = removeNodesAndOrphans(
+          curNodes, curEdges, idsToRemove, rootNodeIdsRef.current
+        );
+        // 用 queueMicrotask 避免 setState 嵌套问题
+        queueMicrotask(() => setNodes(result.nodes));
+        return result.edges;
+      });
+      return curNodes; // 由 queueMicrotask 中的 setNodes 更新
+    });
+  }, [setNodes, setEdges]);
 
   useEffect(() => {
     // 非 VSCode 环境（开发调试）：直接标记 ready
@@ -108,6 +212,11 @@ export function GraphPage() {
         setGraphType(type);
         if (m.nodes?.length || m.edges?.length) {
           applyData(type, { nodes: m.nodes ?? [], edges: m.edges ?? [] });
+          // 记录初始节点 ID 作为查询根节点（首次设置；后续 graphAppend 不覆盖）
+          if (rootNodeIdsRef.current.size === 0) {
+            const adapted = adaptGraph(type, { nodes: m.nodes ?? [], edges: m.edges ?? [] });
+            for (const n of adapted.nodes) rootNodeIdsRef.current.add(n.id);
+          }
         }
         setReady(true);
       }
@@ -242,6 +351,25 @@ export function GraphPage() {
               y: ev.clientY,
             });
           }}
+          onNodesDeleted={(removedIds) => {
+            // 键盘删除后，GraphCore 已移除节点和关联边，
+            // 这里只需做孤立节点清理（使用 requestAnimationFrame 等待状态更新后执行）
+            requestAnimationFrame(() => {
+              setNodes((curNodes) => {
+                setEdges((curEdges) => {
+                  const result = removeNodesAndOrphans(
+                    curNodes, curEdges, new Set(), rootNodeIdsRef.current
+                  );
+                  if (result.nodes.length < curNodes.length) {
+                    queueMicrotask(() => setNodes(result.nodes));
+                    return result.edges;
+                  }
+                  return curEdges;
+                });
+                return curNodes;
+              });
+            });
+          }}
         />
       </div>
       {contextMenu && (
@@ -252,10 +380,7 @@ export function GraphPage() {
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
-          onDeleteNode={(nid) => {
-            setNodes((nds) => nds.filter((n) => n.id !== nid));
-            setEdges((eds) => eds.filter((e) => e.source !== nid && e.target !== nid));
-          }}
+          onDeleteNode={(nid) => deleteNodes(new Set([nid]))}
         />
       )}
       {selectionMenu && (
@@ -264,11 +389,7 @@ export function GraphPage() {
           x={selectionMenu.x}
           y={selectionMenu.y}
           onClose={() => setSelectionMenu(null)}
-          onDeleteSelected={(ids) => {
-            const idSet = new Set(ids);
-            setNodes((nds) => nds.filter((n) => !idSet.has(n.id)));
-            setEdges((eds) => eds.filter((e) => !idSet.has(e.source) && !idSet.has(e.target)));
-          }}
+          onDeleteSelected={(ids) => deleteNodes(new Set(ids))}
         />
       )}
     </div>

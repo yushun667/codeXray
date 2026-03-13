@@ -48,24 +48,30 @@ export interface GraphCoreProps {
   onNodeContextMenu?: (node: Node<FlowNodeData>, event: React.MouseEvent) => void;
   /** 框选后右键：传入选中节点列表和鼠标事件 */
   onSelectionContextMenu?: (selectedNodes: Node<FlowNodeData>[], event: React.MouseEvent) => void;
+  /** 键盘删除节点后回调（传入被删除的节点 ID 集合），由 GraphPage 做孤立节点清理 */
+  onNodesDeleted?: (removedIds: Set<string>) => void;
 }
 
-export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu, onSelectionContextMenu }: GraphCoreProps) {
-  // 节点变更：删除节点时同步清理关联边（框选删除 / Delete键 均走此路径）
+export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu, onSelectionContextMenu, onNodesDeleted }: GraphCoreProps) {
+  // 节点变更：删除节点时先由 React Flow 处理，再通知 GraphPage 做孤立清理
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const removedIds = new Set<string>();
       for (const c of changes) {
         if (c.type === 'remove') removedIds.add(c.id);
       }
+      // 先应用变更（让 React Flow 移除节点）
+      setNodes((nds) => applyNodeChanges(changes, nds));
+      // 清理关联边
       if (removedIds.size > 0) {
         setEdges((eds) =>
           eds.filter((e) => !removedIds.has(e.source) && !removedIds.has(e.target))
         );
+        // 通知 GraphPage 执行孤立节点清理
+        onNodesDeleted?.(removedIds);
       }
-      setNodes((nds) => applyNodeChanges(changes, nds));
     },
-    [setNodes, setEdges]
+    [setNodes, setEdges, onNodesDeleted]
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)),
