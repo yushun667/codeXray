@@ -23,6 +23,8 @@ export type GotoSymbolExecute = (uri: vscode.Uri, line: number, column: number) 
 interface PendingInit {
   type: QueryType;
   data: GraphData;
+  querySymbol?: string;
+  queryFile?: string;
 }
 
 export class VisualizationProvider {
@@ -42,8 +44,10 @@ export class VisualizationProvider {
 
   /**
    * 在编辑区打开图标签，传入 type 与 data；若无 panel 则创建并加载 graph.html
+   * @param querySymbol 查询入口符号名（右键选中的函数名），用于标识根节点
+   * @param queryFile 查询入口文件路径
    */
-  openGraph(type: QueryType, data: GraphData): void {
+  openGraph(type: QueryType, data: GraphData, querySymbol?: string, queryFile?: string): void {
     if (!this._deps) {
       log.warn('VisualizationProvider 未注入 deps');
       return;
@@ -51,7 +55,7 @@ export class VisualizationProvider {
     this._currentType = type;
     if (this._panel) {
       this._panel.reveal();
-      this._postInitGraph(type, data);
+      this._postInitGraph(type, data, querySymbol, queryFile);
       return;
     }
     this._panel = vscode.window.createWebviewPanel(
@@ -72,7 +76,7 @@ export class VisualizationProvider {
         const pending = this._pendingInit;
         if (pending) {
           log.info('收到 graphReady，发送 initGraph', { nodes: pending.data.nodes?.length ?? 0, edges: pending.data.edges?.length ?? 0 });
-          this._postInitGraph(pending.type, pending.data);
+          this._postInitGraph(pending.type, pending.data, pending.querySymbol, pending.queryFile);
         }
         return;
       }
@@ -105,7 +109,7 @@ export class VisualizationProvider {
           .catch((e) => log.warn('query 扩展失败', e));
       }
     });
-    this._pendingInit = { type, data };
+    this._pendingInit = { type, data, querySymbol, queryFile };
     log.info('已创建图 Webview，将多次发送 initGraph 直至收到 graphReady', { nodes: data.nodes?.length ?? 0, edges: data.edges?.length ?? 0 });
     const delays = [300, 800, 1500, 2500];
     const retryTimers: NodeJS.Timeout[] = [];
@@ -114,7 +118,7 @@ export class VisualizationProvider {
         const pending = this._pendingInit;
         if (pending && this._panel?.webview) {
           log.info('发送 initGraph', { delay: ms, nodes: pending.data.nodes?.length ?? 0, edges: pending.data.edges?.length ?? 0 });
-          this._postInitGraph(pending.type, pending.data);
+          this._postInitGraph(pending.type, pending.data, pending.querySymbol, pending.queryFile);
         }
       }, ms);
       retryTimers.push(t);
@@ -136,7 +140,7 @@ export class VisualizationProvider {
     return t[type] ?? type;
   }
 
-  private _postInitGraph(type: QueryType, data: GraphData): void {
+  private _postInitGraph(type: QueryType, data: GraphData, querySymbol?: string, queryFile?: string): void {
     if (!this._panel?.webview) return;
     const nodes = data.nodes ?? [];
     const edges = data.edges ?? [];
@@ -144,6 +148,8 @@ export class VisualizationProvider {
     this._panel.webview.postMessage({
       action: 'initGraph',
       graphType: type,
+      querySymbol,
+      queryFile,
       nodes,
       edges,
     });

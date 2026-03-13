@@ -14,6 +14,7 @@ import {
   Controls,
   Background,
   BackgroundVariant,
+  MarkerType,
   applyNodeChanges,
   applyEdgeChanges,
   SelectionMode,
@@ -34,6 +35,12 @@ const nodeTypes = { graphNode: GraphNode };
 const defaultEdgeOptions = {
   type: 'smoothstep',
   pathOptions: { borderRadius: 8 },
+  markerEnd: {
+    type: MarkerType.ArrowClosed,
+    width: 16,
+    height: 16,
+    color: 'rgba(255, 255, 255, 0.55)',
+  },
 };
 
 function postToHost(msg: GraphToHostMessage): void {

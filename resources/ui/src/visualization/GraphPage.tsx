@@ -212,10 +212,16 @@ export function GraphPage() {
           if (rootNodeIdsRef.current.size === 0) {
             for (const nd of n) rootNodeIdsRef.current.add(nd.id);
           }
-          // 标记查询根节点，用于醒目颜色区分
-          for (const nd of n) {
-            if (rootNodeIdsRef.current.has(nd.id)) {
-              (nd.data as FlowNodeData).isRoot = true;
+          // 标记查询入口节点（右键选中的那个函数），用于醒目颜色区分
+          const qSym = (m as { querySymbol?: string }).querySymbol;
+          if (qSym) {
+            for (const nd of n) {
+              const d = nd.data as FlowNodeData;
+              // 匹配：name 精确相等 或 qualified_name 以 querySymbol 结尾
+              if (d.name === qSym) {
+                d.isRoot = true;
+                break; // 仅标记一个根节点
+              }
             }
           }
           setNodes(n);

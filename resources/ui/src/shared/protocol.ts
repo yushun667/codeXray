@@ -70,6 +70,10 @@ export interface HostToGraphMessage {
   action: HostToGraphAction;
   /** initGraph */
   graphType?: string;
+  /** initGraph: 查询入口符号名（右键选中的函数名），用于标识根节点 */
+  querySymbol?: string;
+  /** initGraph: 查询入口文件路径 */
+  queryFile?: string;
   /** initGraph / graphAppend */
   nodes?: unknown[];
   edges?: unknown[];

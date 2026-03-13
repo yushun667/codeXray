@@ -47,7 +47,7 @@ export function registerEditorCommands(
       const nodeCount = data.nodes?.length ?? 0;
       const edgeCount = data.edges?.length ?? 0;
       log.info('查询结果', { type, nodes: nodeCount, edges: edgeCount });
-      deps.visualizationProvider.openGraph(type, data);
+      deps.visualizationProvider.openGraph(type, data, sym.name, sym.file);
     });
     disposables.push(d);
   }
