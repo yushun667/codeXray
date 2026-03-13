@@ -16,7 +16,7 @@ import { getLayoutedElements } from './graphLayout';
 import { mergeGraph } from './graphMerge';
 import type { Node as RFNode } from 'reactflow';
 import { GraphCore } from './GraphCore';
-import { GraphContextMenu } from './GraphContextMenu';
+import { GraphContextMenu, SelectionContextMenu } from './GraphContextMenu';
 import { adaptCallGraph } from './adapters/callGraph';
 import { adaptClassGraph } from './adapters/classGraph';
 import { adaptDataFlow } from './adapters/dataFlow';
@@ -76,6 +76,11 @@ export function GraphPage() {
   const [edgesTruncated, setEdgesTruncated] = useState<number | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     node: RFNode<FlowNodeData>;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<{
+    selectedNodeIds: string[];
     x: number;
     y: number;
   } | null>(null);
@@ -149,11 +154,14 @@ export function GraphPage() {
 
   // 点击任意位置关闭右键菜单
   useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
+    if (!contextMenu && !selectionMenu) return;
+    const close = () => {
+      setContextMenu(null);
+      setSelectionMenu(null);
+    };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
-  }, [contextMenu]);
+  }, [contextMenu, selectionMenu]);
 
   if (!ready) {
     return (
@@ -226,6 +234,14 @@ export function GraphPage() {
           onNodeContextMenu={(node, ev) =>
             setContextMenu({ node, x: ev.clientX, y: ev.clientY })
           }
+          onSelectionContextMenu={(selectedNodeIds, ev) => {
+            setContextMenu(null);
+            setSelectionMenu({
+              selectedNodeIds,
+              x: (ev as MouseEvent).clientX ?? (ev as React.MouseEvent).clientX,
+              y: (ev as MouseEvent).clientY ?? (ev as React.MouseEvent).clientY,
+            });
+          }}
         />
       </div>
       {contextMenu && (
@@ -239,6 +255,19 @@ export function GraphPage() {
           onDeleteNode={(nid) => {
             setNodes((nds) => nds.filter((n) => n.id !== nid));
             setEdges((eds) => eds.filter((e) => e.source !== nid && e.target !== nid));
+          }}
+        />
+      )}
+      {selectionMenu && (
+        <SelectionContextMenu
+          selectedNodeIds={selectionMenu.selectedNodeIds}
+          x={selectionMenu.x}
+          y={selectionMenu.y}
+          onClose={() => setSelectionMenu(null)}
+          onDeleteSelected={(ids) => {
+            const idSet = new Set(ids);
+            setNodes((nds) => nds.filter((n) => !idSet.has(n.id)));
+            setEdges((eds) => eds.filter((e) => !idSet.has(e.source) && !idSet.has(e.target)));
           }}
         />
       )}

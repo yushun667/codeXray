@@ -96,6 +96,63 @@ function MenuItem({
   );
 }
 
+// ─── 框选右键菜单 ─────────────────────────────────────────
+
+export interface SelectionContextMenuProps {
+  /** 选中的节点 ID 列表 */
+  selectedNodeIds: string[];
+  /** 菜单在视口中的 X 坐标 */
+  x: number;
+  /** 菜单在视口中的 Y 坐标 */
+  y: number;
+  /** 关闭菜单的回调 */
+  onClose: () => void;
+  /** 批量删除选中节点的回调 */
+  onDeleteSelected: (nodeIds: string[]) => void;
+}
+
+/**
+ * 框选后右键菜单：提供「批量删除选中节点」操作
+ */
+export function SelectionContextMenu({
+  selectedNodeIds,
+  x,
+  y,
+  onClose,
+  onDeleteSelected,
+}: SelectionContextMenuProps) {
+  const count = selectedNodeIds.length;
+
+  return (
+    <div
+      className="graph-context-menu"
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        position: 'fixed',
+        left: x,
+        top: y,
+        zIndex: 1000,
+        minWidth: 180,
+        padding: 4,
+        background: 'var(--vscode-editorWidget-background)',
+        border: '1px solid var(--vscode-editorWidget-border)',
+        borderRadius: 4,
+        boxShadow: 'var(--vscode-widget-shadow)',
+      }}
+    >
+      <MenuItem
+        label={`删除选中的 ${count} 个节点`}
+        onClick={() => {
+          onDeleteSelected(selectedNodeIds);
+          onClose();
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── 单节点右键菜单 ───────────────────────────────────────
+
 /**
  * 图节点右键菜单组件
  * 提供：展开前置/后置节点、跳转到定义、删除节点 四个操作
