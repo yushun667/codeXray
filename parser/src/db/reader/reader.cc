@@ -248,6 +248,44 @@ std::vector<QueryNode> QuerySymbolsByName(sqlite3* db, const std::string& name,
 
 // ─── call graph BFS ───────────────────────────────────────────────────────────
 
+/// BFS 展开时的节点数量上限（安全阀）
+static constexpr size_t kMaxBfsNodes = 500;
+
+/// 判断某个符号是否为"噪声符号"——高连接度但语义价值低的节点。
+/// 噪声符号仍会作为叶子出现在结果中（保留直接边），但不会被加入 BFS 队列
+/// 继续展开，从而避免通过这些"枢纽节点"扇出到整个代码库。
+///
+/// 过滤类别：
+///   1. 构造函数 / 析构函数（kind = constructor / destructor）
+///   2. operator 重载（name 以 "operator" 开头）
+///   3. std:: 命名空间的方法（容器/迭代器等基础设施）
+///   4. 高频 trivial accessor（size, empty, begin, end 等）
+static bool IsNoiseSymbol(const QueryNode& node) {
+  // 1. 构造函数 / 析构函数
+  if (node.kind == "constructor" || node.kind == "destructor") return true;
+
+  // 2. operator 重载
+  const auto& name = node.name;
+  if (name.size() >= 8 && name.compare(0, 8, "operator") == 0) return true;
+
+  // 3. std:: 命名空间
+  const auto& qn = node.qualified_name;
+  if (qn.size() >= 5 && qn.compare(0, 5, "std::") == 0) return true;
+
+  // 4. trivial accessor / 基础方法
+  // 这些方法在几乎所有类中都存在，连接度极高但无分析价值
+  static const std::unordered_set<std::string> kTrivialNames = {
+    "size", "empty", "begin", "end", "cbegin", "cend",
+    "rbegin", "rend", "front", "back", "data", "length",
+    "capacity", "reserve", "clear", "push_back", "pop_back",
+    "emplace_back", "insert", "erase", "find", "count",
+    "at", "get", "swap", "resize", "append",
+  };
+  if (kTrivialNames.count(name)) return true;
+
+  return false;
+}
+
 CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_name,
                                 const std::string& file_path, int depth) {
   CallGraphResult res;
@@ -267,6 +305,9 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
   node_map[root_id] = LoadSymbolNode(db, root_id, fc);
 
   while (!q.empty()) {
+    // 安全阀：已达到节点上限时停止 BFS 展开
+    if (node_map.size() >= kMaxBfsNodes) break;
+
     auto [cur_id, rem] = q.front(); q.pop();
     if (rem <= 0) continue;
 
@@ -294,9 +335,13 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
         e.call_line   = sqlite3_column_int(s, 4);
         e.call_column = sqlite3_column_int(s, 5);
         res.edges.push_back(e);
+        // 噪声符号只作为叶子节点保留，不加入 BFS 队列继续展开
         if (!visited.count(callee)) {
           visited.insert(callee);
-          q.push({callee, rem - 1});
+          const auto& callee_node = node_map[callee];
+          if (!IsNoiseSymbol(callee_node)) {
+            q.push({callee, rem - 1});
+          }
         }
       }
       sqlite3_finalize(s);
@@ -326,9 +371,13 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
         e.call_line   = sqlite3_column_int(s, 4);
         e.call_column = sqlite3_column_int(s, 5);
         res.edges.push_back(e);
+        // 噪声符号只作为叶子节点保留，不加入 BFS 队列继续展开
         if (!visited.count(caller)) {
           visited.insert(caller);
-          q.push({caller, rem - 1});
+          const auto& caller_node = node_map[caller];
+          if (!IsNoiseSymbol(caller_node)) {
+            q.push({caller, rem - 1});
+          }
         }
       }
       sqlite3_finalize(s);
