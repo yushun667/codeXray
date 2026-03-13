@@ -17,7 +17,6 @@ import {
   applyNodeChanges,
   applyEdgeChanges,
   SelectionMode,
-  useStoreApi,
   type Node,
   type Edge,
   type NodeChange,
@@ -52,7 +51,6 @@ export interface GraphCoreProps {
 }
 
 export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu, onSelectionContextMenu }: GraphCoreProps) {
-  const storeApi = useStoreApi();
   // 节点变更：删除节点时同步清理关联边（框选删除 / Delete键 均走此路径）
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -99,13 +97,11 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu,
   // 空白区域右键：若有框选节点则弹出批量菜单，否则仅阻止默认菜单
   const onPaneContextMenu = useCallback((e: React.MouseEvent | MouseEvent) => {
     e.preventDefault();
-    const selectedNodes = Array.from(storeApi.getState().nodeInternals.values())
-      .filter((n) => n.selected)
-      .map((n) => n.id);
-    if (selectedNodes.length > 1 && onSelectionContextMenu) {
-      onSelectionContextMenu(selectedNodes, e);
+    const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+    if (selectedIds.length > 1 && onSelectionContextMenu) {
+      onSelectionContextMenu(selectedIds, e);
     }
-  }, [storeApi, onSelectionContextMenu]);
+  }, [nodes, onSelectionContextMenu]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
