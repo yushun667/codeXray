@@ -1,5 +1,11 @@
 /**
- * 图核心画布：React Flow 容器，节点选中/框选/拖拽/删除，缩放平移，节点点击 postMessage(gotoSymbol)
+ * 图核心画布：React Flow 容器。
+ * - 节点类型：自定义 graphNode（minWidth 200、maxWidth 360）
+ * - 支持：节点选中/框选/拖拽移动/删除（Delete/Backspace），缩放平移
+ * - panOnDrag 仅中/右键（[1,2]），左键 selectionOnDrag 用于框选
+ * - 节点双击时从 node.data 取 definition，postMessage(gotoSymbol) 跳转到定义
+ * - 节点删除（Delete/Backspace/框选删除）时自动清理关联边
+ * - 边：smoothstep 折线，borderRadius 圆角过渡
  */
 
 import React, { useCallback } from 'react';
@@ -7,8 +13,10 @@ import {
   ReactFlow,
   Controls,
   Background,
+  BackgroundVariant,
   applyNodeChanges,
   applyEdgeChanges,
+  SelectionMode,
   type Node,
   type Edge,
   type NodeChange,
@@ -20,6 +28,13 @@ import type { GraphToHostMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
 import { GraphNode } from './GraphNode';
+
+const nodeTypes = { graphNode: GraphNode };
+
+const defaultEdgeOptions = {
+  type: 'smoothstep',
+  pathOptions: { borderRadius: 8 },
+};
 
 function postToHost(msg: GraphToHostMessage): void {
   getVscodeApi()?.postMessage(msg);
@@ -34,18 +49,30 @@ export interface GraphCoreProps {
 }
 
 export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu }: GraphCoreProps) {
+  // 节点变更：删除节点时同步清理关联边（框选删除 / Delete键 均走此路径）
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    [setNodes]
+    (changes: NodeChange[]) => {
+      const removedIds = new Set<string>();
+      for (const c of changes) {
+        if (c.type === 'remove') removedIds.add(c.id);
+      }
+      if (removedIds.size > 0) {
+        setEdges((eds) =>
+          eds.filter((e) => !removedIds.has(e.source) && !removedIds.has(e.target))
+        );
+      }
+      setNodes((nds) => applyNodeChanges(changes, nds));
+    },
+    [setNodes, setEdges]
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)),
     [setEdges]
   );
 
-  const onNodeClick = useCallback((_: React.MouseEvent, node: Node<FlowNodeData>) => {
-    const d = node.data as FlowNodeData;
-    const def = d.definition;
+  // 节点双击：跳转到代码定义位置
+  const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node<FlowNodeData>) => {
+    const def = node.data?.definition;
     if (def?.file != null && def?.line != null) {
       postToHost({
         action: 'gotoSymbol',
@@ -56,6 +83,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
     }
   }, []);
 
+  // 右键菜单：阻止默认，转发给 GraphPage
   const onNodeContextMenuHandler = useCallback(
     (ev: React.MouseEvent, node: Node<FlowNodeData>) => {
       ev.preventDefault();
@@ -64,29 +92,38 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu 
     [onNodeContextMenu]
   );
 
+  // 空白区域右键：阻止浏览器默认菜单
+  const onPaneContextMenu = useCallback((e: React.MouseEvent | MouseEvent) => {
+    e.preventDefault();
+  }, []);
+
   return (
-    <div style={{ width: '100%', height: '100%', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+    <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={{ default: GraphNode }}
+        nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenuHandler}
-        defaultEdgeOptions={{ type: 'smoothstep' }}
+        onPaneContextMenu={onPaneContextMenu}
+        defaultEdgeOptions={defaultEdgeOptions}
+        // 左键拖拽用于框选节点，中/右键拖拽用于平移画布
+        panOnDrag={[1, 2]}
+        selectionOnDrag
+        selectionMode={SelectionMode.Partial}
         nodesDraggable
-        panOnDrag={[0, 2]}
-        onPaneContextMenu={(e) => e.preventDefault()}
-        zoomOnScroll
-        zoomOnPinch
+        nodesConnectable={false}
         fitView
         fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.1}
+        minZoom={0.05}
         maxZoom={2}
+        deleteKeyCode={['Delete', 'Backspace']}
+        proOptions={{ hideAttribution: true }}
       >
         <Controls />
-        <Background />
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
       </ReactFlow>
     </div>
   );

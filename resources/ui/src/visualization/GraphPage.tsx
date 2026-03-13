@@ -1,13 +1,18 @@
 /**
  * 图页入口：接收 type + initialData，选 adapter 转 nodes/edges，交给 GraphCore；
  * 接收 graphAppend 时 merge + layout 后更新。与主仓库通过 postMessage 通信。
+ *
+ * 占位状态：
+ * - !ready → 「加载图中…」
+ * - ready && nodes.length === 0 → 「查询结果为空。…」
+ * - edges 超过 MAX_EDGES → 顶部提示横幅
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import type { Node, Edge } from 'reactflow';
 import type { GraphType, GraphData } from '../shared/types';
 import type { HostToGraphMessage } from '../shared/protocol';
-import { getLayoutedElementsDagre } from './dagreLayout';
+import { getLayoutedElements } from './graphLayout';
 import { mergeGraph } from './graphMerge';
 import type { Node as RFNode } from 'reactflow';
 import { GraphCore } from './GraphCore';
@@ -19,50 +24,46 @@ import { adaptControlFlow } from './adapters/controlFlow';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
 
-/** 边数量上限，避免数万条边导致渲染卡死；同 (source,target) 仅保留一条 */
+/** 同 (source,target) 仅保留一条边，总数上限避免卡顿 */
 const MAX_EDGES = 2500;
 
-function limitEdges(edges: Edge[]): Edge[] {
+function deduplicateAndLimitEdges(edges: Edge[]): { edges: Edge[]; originalCount: number } {
+  const originalCount = edges.length;
   const seen = new Set<string>();
   const out: Edge[] = [];
   for (const e of edges) {
     const key = `${e.source}\t${e.target}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ ...e, id: out.length ? `e-${e.source}-${e.target}-${out.length}` : e.id });
+    out.push(e);
     if (out.length >= MAX_EDGES) break;
   }
-  return out;
+  return { edges: out, originalCount };
+}
+
+function adaptGraph(
+  graphType: GraphType,
+  data: GraphData
+): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
+  switch (graphType) {
+    case 'call_graph':   return adaptCallGraph(data);
+    case 'class_graph':  return adaptClassGraph(data);
+    case 'data_flow':    return adaptDataFlow(data);
+    case 'control_flow': return adaptControlFlow(data);
+    default:             return { nodes: [], edges: [] };
+  }
 }
 
 function adaptAndLayout(
   graphType: GraphType,
   data: GraphData
 ): { nodes: Node<FlowNodeData>[]; edges: Edge[]; edgesTruncated?: number } {
-  let nodes: Node<FlowNodeData>[];
-  let edges: Edge[];
-  switch (graphType) {
-    case 'call_graph':
-      ({ nodes, edges } = adaptCallGraph(data));
-      break;
-    case 'class_graph':
-      ({ nodes, edges } = adaptClassGraph(data));
-      break;
-    case 'data_flow':
-      ({ nodes, edges } = adaptDataFlow(data));
-      break;
-    case 'control_flow':
-      ({ nodes, edges } = adaptControlFlow(data));
-      break;
-    default:
-      nodes = [];
-      edges = [];
-  }
-  const originalCount = edges.length;
-  edges = limitEdges(edges);
+  let { nodes, edges } = adaptGraph(graphType, data);
+  const { edges: limitedEdges, originalCount } = deduplicateAndLimitEdges(edges);
+  edges = limitedEdges;
   const edgesTruncated = originalCount > edges.length ? originalCount : undefined;
   if (nodes.length > 0) {
-    nodes = getLayoutedElementsDagre(nodes, edges, 'LR');
+    nodes = getLayoutedElements(nodes, edges, graphType);
   }
   return { nodes, edges, edgesTruncated };
 }
@@ -72,67 +73,31 @@ export function GraphPage() {
   const [ready, setReady] = useState(false);
   const [nodes, setNodes] = useState<Node<FlowNodeData>[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [edgesTruncated, setEdgesTruncated] = useState<number | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     node: RFNode<FlowNodeData>;
     x: number;
     y: number;
   } | null>(null);
 
-  const [edgesTruncated, setEdgesTruncated] = useState<number | null>(null);
-  const nodesRef = useRef<Node<FlowNodeData>[]>([]);
-  const edgesRef = useRef<Edge[]>([]);
-  nodesRef.current = nodes;
-  edgesRef.current = edges;
-
-  const handleNodeDimensions = useCallback((id: string, w: number, h: number) => {
-    setNodes((prev) => {
-      const withSize = prev.map((n) => (n.id === id ? { ...n, width: w, height: h } : n));
-      return getLayoutedElementsDagre(withSize, edgesRef.current);
-    });
+  const applyData = useCallback((type: GraphType, data: GraphData) => {
+    const { nodes: n, edges: e, edgesTruncated: trunc } = adaptAndLayout(type, data);
+    setNodes(n);
+    setEdges(e);
+    setEdgesTruncated(trunc ?? null);
   }, []);
 
-  const injectOnDimensions = useCallback(
-    (nodeList: Node<FlowNodeData>[]) =>
-      nodeList.map((n) => ({
-        ...n,
-        data: { ...n.data, onDimensions: handleNodeDimensions },
-      })),
-    [handleNodeDimensions]
-  );
-
-  const applyData = useCallback(
-    (type: GraphType, data: GraphData) => {
-      const { nodes: n, edges: e, edgesTruncated: truncated } = adaptAndLayout(type, data);
-      setEdges(e);
-      setNodes(injectOnDimensions(n));
-      setEdgesTruncated(truncated ?? null);
-    },
-    [injectOnDimensions]
-  );
-
   useEffect(() => {
+    // 非 VSCode 环境（开发调试）：直接标记 ready
     if (!getVscodeApi()) {
       setReady(true);
       return;
     }
+
     const handler = (event: MessageEvent<HostToGraphMessage>) => {
       const m = event.data;
       if (!m || typeof m !== 'object' || !m.action) return;
-      if (m.action === 'exportGraph') {
-        const currentNodes = nodesRef.current;
-        const currentEdges = edgesRef.current;
-        const payload = {
-          nodes: currentNodes.map((n) => ({
-            id: n.id,
-            type: n.type,
-            data: { label: (n.data as FlowNodeData)?.label },
-            position: n.position,
-          })),
-          edges: currentEdges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-        };
-        getVscodeApi()?.postMessage({ action: 'graphExported', payload });
-        return;
-      }
+
       if (m.action === 'initGraph') {
         const type = (m.graphType as GraphType) ?? 'call_graph';
         setGraphType(type);
@@ -141,74 +106,58 @@ export function GraphPage() {
         }
         setReady(true);
       }
+
       if (m.action === 'graphAppend' && (m.nodes?.length || m.edges?.length)) {
         const appendData: GraphData = { nodes: m.nodes ?? [], edges: m.edges ?? [] };
-        let appendFlowNodes: Node<FlowNodeData>[];
-        let appendFlowEdges: Edge[];
-        switch (graphType) {
-          case 'call_graph':
-            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptCallGraph(appendData));
-            break;
-          case 'class_graph':
-            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptClassGraph(appendData));
-            break;
-          case 'data_flow':
-            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptDataFlow(appendData));
-            break;
-          case 'control_flow':
-            ({ nodes: appendFlowNodes, edges: appendFlowEdges } = adaptControlFlow(appendData));
-            break;
-          default:
-            appendFlowNodes = [];
-            appendFlowEdges = [];
-        }
-        setNodes((cur) => {
-          setEdges((curE) => {
-            const { nodes: mergedN, edges: mergedE } = mergeGraph(
-              cur,
-              curE,
-              appendFlowNodes,
-              appendFlowEdges
-            );
-            const limitedE = limitEdges(mergedE);
-            if (mergedE.length > limitedE.length) setEdgesTruncated(mergedE.length);
-            const laid = getLayoutedElementsDagre(mergedN, limitedE, 'LR');
-            queueMicrotask(() => {
-              setNodes(injectOnDimensions(laid));
+        setGraphType((curType) => {
+          const { nodes: appendN, edges: appendE } = adaptGraph(curType, appendData);
+          setNodes((curNodes) => {
+            setEdges((curEdges) => {
+              const { nodes: mergedN, edges: mergedE } = mergeGraph(
+                curNodes,
+                curEdges,
+                appendN,
+                appendE
+              );
+              const { edges: limitedE, originalCount } = deduplicateAndLimitEdges(mergedE);
+              if (originalCount > limitedE.length) setEdgesTruncated(originalCount);
+              const laid = getLayoutedElements(mergedN, limitedE, curType);
+              queueMicrotask(() => setNodes(laid));
+              return limitedE;
             });
-            return limitedE;
+            return curNodes;
           });
-          return cur;
+          return curType;
         });
       }
     };
+
     window.addEventListener('message', handler);
+
+    // 通知主仓库 Webview 已就绪，可发送 initGraph
     const sendReady = () => getVscodeApi()?.postMessage({ action: 'graphReady' });
     sendReady();
     const t1 = setTimeout(sendReady, 200);
     const t2 = setTimeout(sendReady, 600);
+
     return () => {
       window.removeEventListener('message', handler);
       clearTimeout(t1);
       clearTimeout(t2);
     };
-  }, [graphType, applyData]);
+  }, [applyData]);
 
+  // 点击任意位置关闭右键菜单
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
-    const t = setTimeout(close, 0);
     document.addEventListener('mousedown', close);
-    return () => {
-      clearTimeout(t);
-      document.removeEventListener('mousedown', close);
-    };
+    return () => document.removeEventListener('mousedown', close);
   }, [contextMenu]);
 
   if (!ready) {
     return (
       <div
-        className="graph-loading"
         style={{
           padding: 16,
           fontFamily: 'var(--vscode-font-family, monospace)',
@@ -225,13 +174,15 @@ export function GraphPage() {
   if (nodes.length === 0) {
     return (
       <div
-        className="graph-empty"
         style={{
           width: '100%',
           height: '100%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
+          textAlign: 'center',
+          padding: '0 24px',
+          boxSizing: 'border-box',
           background: 'var(--vscode-editor-background, #1e1e1e)',
           color: 'var(--vscode-descriptionForeground, #858585)',
           fontFamily: 'var(--vscode-font-family, monospace)',
@@ -244,7 +195,15 @@ export function GraphPage() {
   }
 
   return (
-    <div className="graph-page" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--vscode-editor-background, #1e1e1e)' }}>
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--vscode-editor-background, #1e1e1e)',
+      }}
+    >
       {edgesTruncated != null && (
         <div
           style={{
@@ -264,7 +223,9 @@ export function GraphPage() {
           edges={edges}
           setNodes={setNodes}
           setEdges={setEdges}
-          onNodeContextMenu={(node, ev) => setContextMenu({ node, x: ev.clientX, y: ev.clientY })}
+          onNodeContextMenu={(node, ev) =>
+            setContextMenu({ node, x: ev.clientX, y: ev.clientY })
+          }
         />
       </div>
       {contextMenu && (
@@ -275,6 +236,10 @@ export function GraphPage() {
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
+          onDeleteNode={(nid) => {
+            setNodes((nds) => nds.filter((n) => n.id !== nid));
+            setEdges((eds) => eds.filter((e) => e.source !== nid && e.target !== nid));
+          }}
         />
       )}
     </div>

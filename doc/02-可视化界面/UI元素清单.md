@@ -116,16 +116,21 @@
 | 画布 | ReactFlow 容器 | 节点、边、拖拽、框选、缩放、平移 |
 | 背景 | Background | 网格背景 |
 | 缩放/适应控件 | Controls | React Flow 自带：缩放、适应视图等 |
-| 图节点 | GraphNode | 自定义节点：左/右 Handle；框内多行 label；title 悬停全文；点击 postMessage(gotoSymbol) 跳转代码 |
+| 图节点 | GraphNode | 自定义节点：左/右 Handle；框内多行 label；title 悬停全文；双击 postMessage(gotoSymbol) 跳转代码 |
 | 边 | Edge | smoothstep、圆角；按 (source,target) 去重，总数上限 2500 |
+| 框选删除 | 交互 | 左键拖拽框选节点，按 Delete/Backspace 批量删除选中节点及其关联边 |
 
 ### 3.3 节点右键菜单（GraphContextMenu.tsx）
 
 | 元素 | 类型 | 说明 |
 |------|------|------|
 | 浮层菜单 | 固定定位 | 出现在右键位置 |
-| 菜单项「继续查询前置节点」 | 按钮 | postMessage `queryPredecessors` |
-| 菜单项「继续查询后置节点」 | 按钮 | postMessage `querySuccessors` |
+| 菜单项「展开前置节点」 | 按钮 | postMessage `queryPredecessors`，展开该节点的调用者 |
+| 菜单项「展开后置节点」 | 按钮 | postMessage `querySuccessors`，展开该节点调用的函数 |
+| 分隔线 | 分隔符 | 视觉分隔不同功能组 |
+| 菜单项「跳转到定义」 | 按钮 | postMessage `gotoSymbol`，跳转到节点代码定义位置；无定义信息时禁用 |
+| 分隔线 | 分隔符 | 视觉分隔 |
+| 菜单项「删除节点」 | 按钮 | 从图中移除该节点及其关联边 |
 
 ---
 
