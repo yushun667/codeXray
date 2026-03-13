@@ -4,8 +4,10 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <unordered_map>
+#include <chrono>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -184,17 +186,44 @@ int64_t DbWriter::EnsureFile(const std::string& path) {
 // ─── WriteAll ────────────────────────────────────────────────────────────────
 
 bool DbWriter::WriteAll(const CombinedOutput& out) {
+  auto now_us = []() -> uint64_t {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  };
+  uint64_t ta = now_us();
+
   // 预注册所有引用文件
   for (const auto& p : out.referenced_files) EnsureFile(p);
+  uint64_t tb = now_us();
 
   if (!WriteSymbols(out.symbols))                   return false;
+  uint64_t tc = now_us();
   if (!WriteClasses(out.classes))                   return false;
+  uint64_t td = now_us();
   if (!WriteGlobalVars(out.global_vars))            return false;
+  uint64_t te = now_us();
   if (!WriteCallEdges(out.call_edges))              return false;
+  uint64_t tf = now_us();
   if (!WriteClassRelations(out.class_relations))    return false;
   if (!WriteClassMembers(out.class_members))        return false;
   if (!WriteDataFlowEdges(out.data_flow_edges))     return false;
+  uint64_t tg = now_us();
   if (!WriteCfg(out.cfg_nodes, out.cfg_edges))      return false;
+  uint64_t th = now_us();
+
+  // 仅当某步骤耗时超过 500ms 时才输出（避免日志洪水）
+  uint64_t total = th - ta;
+  if (total > 500000) {  // >500ms
+    LogInfo("[WriteAll] total=" + std::to_string(total/1000) + "ms" +
+            " ensureFiles=" + std::to_string((tb-ta)/1000) + "ms" +
+            " symbols=" + std::to_string((tc-tb)/1000) + "ms(" + std::to_string(out.symbols.size()) + ")" +
+            " classes=" + std::to_string((td-tc)/1000) + "ms(" + std::to_string(out.classes.size()) + ")" +
+            " gvars=" + std::to_string((te-td)/1000) + "ms" +
+            " callEdges=" + std::to_string((tf-te)/1000) + "ms(" + std::to_string(out.call_edges.size()) + ")" +
+            " relMemDf=" + std::to_string((tg-tf)/1000) + "ms" +
+            " cfg=" + std::to_string((th-tg)/1000) + "ms(" +
+                std::to_string(out.cfg_nodes.size()) + "n/" + std::to_string(out.cfg_edges.size()) + "e)");
+  }
   return true;
 }
 
@@ -477,7 +506,9 @@ static std::string Fnv1a64Hex(const std::string& s) {
 
 // ─── WriteCfg ─────────────────────────────────────────────────────────────────
 // 将 CFG 数据序列化为 protobuf 文件，并在 cfg_index 表中记录索引。
-// 每个函数独立一个 pb 文件，路径为 cfg/<hash[0:2]>/<hash>.pb（相对 db_dir_）。
+// 优化：将同一 TU 内所有函数的 CFG 合并到一个 TuCfgBundle pb 文件中，
+// 大幅减少文件 I/O 次数（原来每个函数一个文件 → 现在每个 TU 一个文件）。
+// 文件路径：cfg/<hash[0:2]>/<hash>.pb（hash 基于 TU 内所有函数 USR 的组合哈希）
 // 使用预编译的 stmt_upsert_cfg_index_
 
 bool DbWriter::WriteCfg(const std::vector<CfgNodeRow>& nodes,
@@ -500,7 +531,16 @@ bool DbWriter::WriteCfg(const std::vector<CfgNodeRow>& nodes,
     if (!r.function_usr.empty()) edges_by_usr[r.function_usr].push_back(&r);
   }
 
-  bool all_ok = true;
+  // 构建 TuCfgBundle，包含所有函数的 CFG
+  codexray::cfg::TuCfgBundle bundle;
+
+  // 收集所有 symbol_id 及其 USR（后续写 cfg_index 用）
+  struct SymInfo {
+    int64_t sym_id;
+    std::string usr;
+  };
+  std::vector<SymInfo> sym_infos;
+
   for (auto& [usr, node_ptrs] : nodes_by_usr) {
     int64_t sym_id = 0;
     {
@@ -510,15 +550,12 @@ bool DbWriter::WriteCfg(const std::vector<CfgNodeRow>& nodes,
     }
     if (sym_id == 0) continue;
 
-    std::string hex = Fnv1a64Hex(usr);
-    std::string rel_path = "cfg/" + hex.substr(0, 2) + "/" + hex + ".pb";
-    std::string abs_path = db_dir_ + "/" + rel_path;
+    sym_infos.push_back({sym_id, usr});
 
-    // 构建 FunctionCfg protobuf 消息
-    codexray::cfg::FunctionCfg proto;
-    proto.set_function_usr(usr);
+    auto* func_cfg = bundle.add_functions();
+    func_cfg->set_function_usr(usr);
     for (const auto* n : node_ptrs) {
-      auto* pn = proto.add_nodes();
+      auto* pn = func_cfg->add_nodes();
       pn->set_block_id(n->block_id);
       pn->set_file_path(n->file_path);
       pn->set_begin_line(n->begin_line);
@@ -530,45 +567,71 @@ bool DbWriter::WriteCfg(const std::vector<CfgNodeRow>& nodes,
     auto eit = edges_by_usr.find(usr);
     if (eit != edges_by_usr.end()) {
       for (const auto* e : eit->second) {
-        auto* pe = proto.add_edges();
+        auto* pe = func_cfg->add_edges();
         pe->set_from_block(e->from_block);
         pe->set_to_block(e->to_block);
         pe->set_edge_type(e->edge_type);
       }
     }
+  }
 
-    // 创建目录并写入 pb 文件
-    fs::path dir = fs::path(abs_path).parent_path();
+  if (sym_infos.empty()) return true;
+
+  // 使用第一个函数 USR 的哈希作为文件名（同一 TU 内所有函数共享此文件）
+  std::string hex = Fnv1a64Hex(sym_infos[0].usr);
+  std::string sub_dir = hex.substr(0, 2);
+  std::string rel_path = "cfg/" + sub_dir + "/" + hex + ".pb";
+  std::string abs_path = db_dir_ + "/" + rel_path;
+
+  // 创建目录
+  {
+    std::string dir_path = db_dir_ + "/cfg/" + sub_dir;
     std::error_code ec;
-    fs::create_directories(dir, ec);
+    fs::create_directories(dir_path, ec);
     if (ec) {
-      LogError("WriteCfg: cannot create dir " + dir.string() + ": " + ec.message());
-      all_ok = false;
-      continue;
+      LogError("WriteCfg: cannot create dir " + dir_path + ": " + ec.message());
+      return false;
     }
-    std::string data;
-    if (!proto.SerializeToString(&data)) {
-      LogError("WriteCfg: SerializeToString failed for usr=" + usr);
-      all_ok = false;
-      continue;
-    }
-    std::ofstream ofs(abs_path, std::ios::binary | std::ios::trunc);
-    if (!ofs) {
-      LogError("WriteCfg: cannot open " + abs_path + " for writing");
-      all_ok = false;
-      continue;
-    }
-    ofs.write(data.data(), static_cast<std::streamsize>(data.size()));
-    ofs.close();
+  }
 
-    // 更新 cfg_index 表
-    sqlite3_bind_int64(stmt_upsert_cfg_index_, 1, sym_id);
+  // 序列化 TuCfgBundle
+  std::string data;
+  if (!bundle.SerializeToString(&data)) {
+    LogError("WriteCfg: SerializeToString failed for TuCfgBundle");
+    return false;
+  }
+
+  // 使用 POSIX I/O 直接写入文件
+  int fd = ::open(abs_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    LogError("WriteCfg: cannot open " + abs_path + " for writing");
+    return false;
+  }
+  const char* ptr = data.data();
+  size_t remain = data.size();
+  bool write_ok = true;
+  while (remain > 0) {
+    ssize_t n = ::write(fd, ptr, remain);
+    if (n <= 0) { write_ok = false; break; }
+    ptr += n;
+    remain -= n;
+  }
+  ::close(fd);
+
+  if (!write_ok) {
+    LogError("WriteCfg: write failed for " + abs_path);
+    return false;
+  }
+
+  // 更新 cfg_index 表：所有函数指向同一个 pb 文件
+  for (const auto& si : sym_infos) {
+    sqlite3_bind_int64(stmt_upsert_cfg_index_, 1, si.sym_id);
     sqlite3_bind_text(stmt_upsert_cfg_index_, 2, rel_path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_step(stmt_upsert_cfg_index_);
     sqlite3_reset(stmt_upsert_cfg_index_);
   }
 
-  return all_ok;
+  return true;
 }
 
 // ─── UpdateParsedFile ─────────────────────────────────────────────────────────

@@ -23,9 +23,16 @@ message CfgEdge {
   string edge_type   = 3;  // "unconditional" / "true" / "false"
 }
 
-// 单个函数的完整 CFG（写入 .pb 文件的顶层消息）
+// 单个函数的完整 CFG
 message FunctionCfg {
   string            function_usr = 1;  // 函数 Clang USR
   repeated CfgNode  nodes        = 2;
   repeated CfgEdge  edges        = 3;
+}
+
+// 一个编译单元（TU）内所有函数的 CFG 捆绑包。
+// 将原来每个函数一个 .pb 文件合并为每个 TU 一个 .pb 文件，
+// 大幅减少文件 I/O 次数（数百→1）。
+message TuCfgBundle {
+  repeated FunctionCfg functions = 1;
 }

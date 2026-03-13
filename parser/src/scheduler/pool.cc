@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -603,6 +604,38 @@ static RunResult RunScheduledPreFork(
   }
   LogInfo("Pre-forked " + std::to_string(par) + " workers");
 
+  // ── Profiling 基础设施 ──────────────────────────────────────────────
+  auto global_start = std::chrono::steady_clock::now();
+  auto ms_since = [&]() -> int64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - global_start).count();
+  };
+  auto now_us = []() -> uint64_t {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  };
+
+  // 每线程累计各阶段耗时（微秒）
+  struct ThreadStats {
+    uint64_t serialize_us = 0;   // SerializeTURequestPb 耗时
+    uint64_t write_us     = 0;   // WriteFrame 发送请求耗时
+    uint64_t wait_us      = 0;   // ReadFrame 等待响应耗时
+    uint64_t deser_us     = 0;   // DeserializeWorkerResponsePb 耗时
+    uint64_t enqueue_us   = 0;   // 推入结果队列耗时
+    uint64_t total_us     = 0;   // 线程总耗时
+    int      tu_count     = 0;   // 处理 TU 数
+    uint64_t resp_bytes   = 0;   // 响应帧总字节数
+  };
+  std::vector<ThreadStats> thread_stats(par);
+
+  // DB 写入线程 profiling（单线程，在 writer_thread 中累计）
+  struct WriterStats {
+    uint64_t total_us     = 0;   // 写入线程总工作时间
+    uint64_t wait_us      = 0;   // 等待队列有数据的时间
+    int      tu_count     = 0;   // 处理 TU 数
+  };
+  WriterStats writer_stats;
+
   RunResult result;
   if (!on_result) result.outputs.resize(total);
 
@@ -635,6 +668,7 @@ static RunResult RunScheduledPreFork(
     writer_thread = std::thread([&] {
       while (true) {
         ResultItem item;
+        uint64_t wait_start = now_us();
         {
           std::unique_lock<std::mutex> lk(rq_mu);
           rq_cv.wait(lk, [&] { return !result_queue.empty() || rq_done; });
@@ -642,7 +676,12 @@ static RunResult RunScheduledPreFork(
           item = std::move(result_queue.front());
           result_queue.pop();
         }
+        uint64_t wait_end = now_us();
+        writer_stats.wait_us += (wait_end - wait_start);
+        uint64_t work_start = now_us();
         on_result(item.tu, item.out, item.ok);
+        writer_stats.total_us += (now_us() - work_start);
+        writer_stats.tu_count++;
       }
     });
   }
@@ -655,6 +694,8 @@ static RunResult RunScheduledPreFork(
   for (unsigned t = 0; t < par; ++t) {
     threads.emplace_back([&, t] {
       WorkerProcess& w = worker_procs[t];
+      ThreadStats& stats = thread_stats[t];
+      uint64_t thread_start = now_us();
 
       while (true) {
         // 从队列取任务
@@ -668,13 +709,24 @@ static RunResult RunScheduledPreFork(
         const TUEntry& tu = tu_list[idx];
         CombinedOutput out;
         bool ok = false;
+        stats.tu_count++;
+
+        // 计时变量（声明在 goto 之前，避免跳过初始化）
+        uint64_t t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+
+        // 序列化请求
+        t0 = now_us();
+        std::string req_data = SerializeTURequestPb(tu);
+        t1 = now_us();
+        stats.serialize_us += (t1 - t0);
 
         // 发送请求
-        std::string req_data = SerializeTURequestPb(tu);
         if (!WriteFrame(w.write_fd, req_data)) {
           LogWarn("Worker write failed on TU: " + tu.source_file);
           goto crash_recovery;
         }
+        t2 = now_us();
+        stats.write_us += (t2 - t1);
 
         // 读取响应
         {
@@ -690,6 +742,9 @@ static RunResult RunScheduledPreFork(
             }
             goto crash_recovery;
           }
+          t3 = now_us();
+          stats.wait_us += (t3 - t2);
+          stats.resp_bytes += resp_data.size();
 
           // 反序列化响应
           {
@@ -698,6 +753,8 @@ static RunResult RunScheduledPreFork(
               LogError("Worker response deserialization failed on TU: " + tu.source_file);
               goto crash_recovery;
             }
+            t4 = now_us();
+            stats.deser_us += (t4 - t3);
             if (!ok) {
               LogWarn("Worker analysis failed [" + resp_error + "]: " + tu.source_file);
             }
@@ -729,11 +786,13 @@ static RunResult RunScheduledPreFork(
 
         if (on_result) {
           // 推入异步写入队列（不等 DB 写入完成）
+          uint64_t eq0 = now_us();
           {
             std::lock_guard<std::mutex> lk(rq_mu);
             result_queue.push(ResultItem{idx, tu, std::move(out), ok});
           }
           rq_cv.notify_one();
+          stats.enqueue_us += (now_us() - eq0);
         } else if (ok) {
           result.outputs[idx] = std::move(out);
         }
@@ -744,11 +803,13 @@ static RunResult RunScheduledPreFork(
           progress(d, total, tu.source_file);
         }
       }
+      stats.total_us = now_us() - thread_start;
     });
   }
 
   // 等待所有分析线程完成
   for (auto& th : threads) th.join();
+  int64_t analysis_done_ms = ms_since();
 
   // 通知 DB 写入线程：所有分析完成
   if (writer_thread.joinable()) {
@@ -762,6 +823,27 @@ static RunResult RunScheduledPreFork(
 
   // ── 优雅关闭所有 worker ────────────────────────────────────────────
   for (auto& w : worker_procs) ShutdownWorker(w);
+  int64_t total_ms = ms_since();
+
+  // ── Profiling 输出 ──────────────────────────────────────────────────
+  LogInfo("=== PROFILING SUMMARY (T+" + std::to_string(total_ms) + "ms) ===");
+  LogInfo("Analysis done at T+" + std::to_string(analysis_done_ms) + "ms, "
+          "workers shutdown at T+" + std::to_string(total_ms) + "ms");
+  for (unsigned t = 0; t < par; ++t) {
+    auto& s = thread_stats[t];
+    LogInfo("Thread " + std::to_string(t) +
+            ": TUs=" + std::to_string(s.tu_count) +
+            " total=" + std::to_string(s.total_us / 1000) + "ms" +
+            " ser=" + std::to_string(s.serialize_us / 1000) + "ms" +
+            " write=" + std::to_string(s.write_us / 1000) + "ms" +
+            " wait=" + std::to_string(s.wait_us / 1000) + "ms" +
+            " deser=" + std::to_string(s.deser_us / 1000) + "ms" +
+            " enqueue=" + std::to_string(s.enqueue_us / 1000) + "ms" +
+            " resp=" + std::to_string(s.resp_bytes / 1024) + "KB");
+  }
+  LogInfo("WriterThread: work=" + std::to_string(writer_stats.total_us / 1000) + "ms" +
+          " wait=" + std::to_string(writer_stats.wait_us / 1000) + "ms" +
+          " TUs=" + std::to_string(writer_stats.tu_count));
 
   result.failed_count = failed.load();
   LogInfo("Scheduler (pre-fork) done: " + std::to_string(total - result.failed_count) +

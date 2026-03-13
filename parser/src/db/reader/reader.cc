@@ -490,7 +490,32 @@ DataFlowResult QueryDataFlow(sqlite3* db, const std::string& symbol_usr_or_name,
 }
 
 // ─── control flow ─────────────────────────────────────────────────────────────
-// 从 cfg_index 查询 pb 文件路径，读取并反序列化 FunctionCfg protobuf 消息。
+// 从 cfg_index 查询 pb 文件路径，读取并反序列化 CFG protobuf 消息。
+// 支持两种格式：新格式 TuCfgBundle（per-TU 捆绑）和旧格式 FunctionCfg（per-function）。
+
+/// 将 FunctionCfg 中的节点和边转换为 ControlFlowResult
+static void ConvertFunctionCfg(const codexray::cfg::FunctionCfg& func_cfg,
+                                ControlFlowResult& res) {
+  for (const auto& pn : func_cfg.nodes()) {
+    CfgNodeQ n;
+    n.id         = pn.block_id();
+    n.block_id   = pn.block_id();
+    n.file       = pn.file_path();
+    n.begin_line = pn.begin_line();
+    n.begin_col  = pn.begin_col();
+    n.end_line   = pn.end_line();
+    n.end_col    = pn.end_col();
+    n.label      = pn.label();
+    res.nodes.push_back(n);
+  }
+  for (const auto& pe : func_cfg.edges()) {
+    CfgEdgeQ e;
+    e.from_node_id = pe.from_block();
+    e.to_node_id   = pe.to_block();
+    e.edge_type    = pe.edge_type();
+    res.edges.push_back(e);
+  }
+}
 
 ControlFlowResult QueryControlFlow(sqlite3* db, const std::string& db_dir,
                                     const std::string& symbol_usr_or_name,
@@ -511,6 +536,17 @@ ControlFlowResult QueryControlFlow(sqlite3* db, const std::string& db_dir,
   }
   if (pb_path.empty()) return res;
 
+  // 查询该 symbol 的 USR（用于在 TuCfgBundle 中定位对应函数）
+  std::string sym_usr;
+  {
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT usr FROM symbol WHERE id=?", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, sym_id);
+    if (sqlite3_step(s) == SQLITE_ROW) sym_usr = ColText(s, 0);
+    sqlite3_finalize(s);
+  }
+
   // 构造绝对路径并读取 pb 文件
   std::string abs_path = db_dir + "/" + pb_path;
   std::ifstream ifs(abs_path, std::ios::binary);
@@ -521,34 +557,25 @@ ControlFlowResult QueryControlFlow(sqlite3* db, const std::string& db_dir,
   std::string data((std::istreambuf_iterator<char>(ifs)),
                    std::istreambuf_iterator<char>());
 
-  // 反序列化 FunctionCfg
+  // 尝试新格式 TuCfgBundle（per-TU 捆绑多个函数的 CFG）
+  codexray::cfg::TuCfgBundle bundle;
+  if (bundle.ParseFromString(data) && bundle.functions_size() > 0) {
+    // 在 bundle 中查找匹配的函数
+    for (const auto& func_cfg : bundle.functions()) {
+      if (func_cfg.function_usr() == sym_usr) {
+        ConvertFunctionCfg(func_cfg, res);
+        return res;
+      }
+    }
+    // USR 未匹配到（可能数据不一致），尝试旧格式兜底
+  }
+
+  // 兜底：尝试旧格式 FunctionCfg（per-function 单独文件）
   codexray::cfg::FunctionCfg proto;
-  if (!proto.ParseFromString(data)) {
+  if (proto.ParseFromString(data)) {
+    ConvertFunctionCfg(proto, res);
+  } else {
     LogError("QueryControlFlow: ParseFromString failed for " + abs_path);
-    return res;
-  }
-
-  // 转换节点：id 和 block_id 都使用 block_id（前端依赖整数 ID 识别节点）
-  for (const auto& pn : proto.nodes()) {
-    CfgNodeQ n;
-    n.id         = pn.block_id();
-    n.block_id   = pn.block_id();
-    n.file       = pn.file_path();
-    n.begin_line = pn.begin_line();
-    n.begin_col  = pn.begin_col();
-    n.end_line   = pn.end_line();
-    n.end_col    = pn.end_col();
-    n.label      = pn.label();
-    res.nodes.push_back(n);
-  }
-
-  // 转换边：from/to 使用 block_id
-  for (const auto& pe : proto.edges()) {
-    CfgEdgeQ e;
-    e.from_node_id = pe.from_block();
-    e.to_node_id   = pe.to_block();
-    e.edge_type    = pe.edge_type();
-    res.edges.push_back(e);
   }
 
   return res;

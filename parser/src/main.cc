@@ -25,6 +25,7 @@
 #include <string>
 #include <unistd.h>
 #include <nlohmann/json.hpp>
+#include <chrono>
 
 namespace {
 
@@ -106,12 +107,23 @@ int main(int argc, char* argv[]) {
   // WorkerResponse 帧写入 stdout。父进程关闭 stdin 管道时退出。
   if (cmd == "parse-tu-worker") {
     codexray::LogInit("", false);
+    // Worker 端 profiling（输出到 stderr，不影响 stdout 协议）
+    auto now_us = []() -> uint64_t {
+      return std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    int tu_num = 0;
+    uint64_t total_analysis_us = 0, total_serialize_us = 0;
+    uint64_t total_mtime_us = 0, total_read_us = 0, total_write_us = 0;
     while (true) {
       std::string frame;
       bool timed_out = false;
+      uint64_t r0 = now_us();
       // timeout_secs=0 → 无限等待下一个请求
       if (!codexray::ReadFrame(STDIN_FILENO, frame, 0, timed_out))
         break;  // EOF → 父进程关闭了 write_fd → 正常退出
+      uint64_t r1 = now_us();
+      total_read_us += (r1 - r0);
 
       codexray::TUEntry tu;
       if (!codexray::DeserializeTURequestPb(frame, tu)) {
@@ -122,18 +134,42 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
+      tu_num++;
+      uint64_t a0 = now_us();
       codexray::CombinedOutput out;
       bool ok = codexray::combined::RunAllAnalysesOnTU(tu, out);
+      uint64_t a1 = now_us();
+      total_analysis_us += (a1 - a0);
+
+      uint64_t m0 = now_us();
       if (ok) {
         // 在 Worker 中计算源文件 mtime 和 hash，避免父进程重复读文件
         out.source_file_mtime = codexray::GetFileMtime(tu.source_file);
         out.source_file_hash  = codexray::ComputeFileHash(tu.source_file);
       }
+      uint64_t m1 = now_us();
+      total_mtime_us += (m1 - m0);
+
+      uint64_t s0 = now_us();
       auto resp = codexray::SerializeWorkerResponsePb(
           out, ok, ok ? "" : "analysis failed");
+      uint64_t s1 = now_us();
+      total_serialize_us += (s1 - s0);
+
+      uint64_t w0 = now_us();
       if (!codexray::WriteFrame(STDOUT_FILENO, resp))
         break;  // 父进程关闭了读端 → 退出
+      total_write_us += (now_us() - w0);
     }
+    // Worker 退出前输出 profiling 汇总到 stderr
+    fprintf(stderr, "[worker-prof] TUs=%d analysis=%ldms serialize=%ldms "
+                    "mtime=%ldms read=%ldms write=%ldms\n",
+            tu_num,
+            (long)(total_analysis_us / 1000),
+            (long)(total_serialize_us / 1000),
+            (long)(total_mtime_us / 1000),
+            (long)(total_read_us / 1000),
+            (long)(total_write_us / 1000));
     return 0;
   }
 
