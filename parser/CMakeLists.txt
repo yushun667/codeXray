@@ -55,9 +55,16 @@ if(NOT JSON_INCLUDE_DIR)
 endif()
 set(JSON_INCLUDE_DIRS ${JSON_INCLUDE_DIR})
 
-# Protobuf（必需，CFG 数据二进制存储）
+# Protobuf（必需，CFG 数据二进制存储 + IPC 帧通信）
+# Protobuf v6+ (33.x) 依赖 abseil-cpp，需通过 pkg-config 获取完整链接标志
 find_package(Protobuf REQUIRED)
 message(STATUS "Protobuf found: ${Protobuf_VERSION}, libs: ${Protobuf_LIBRARIES}")
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(PROTOBUF_PC QUIET protobuf)
+  if(PROTOBUF_PC_FOUND)
+    message(STATUS "Protobuf pkg-config libs: ${PROTOBUF_PC_LIBRARIES}")
+  endif()
+endif()
 
 # 生成 proto C++ 代码
 file(GLOB PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/*.proto)
@@ -100,6 +107,11 @@ target_include_directories(codexray-parser PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}  # 生成的 proto 头文件目录
 )
 target_link_libraries(codexray-parser PRIVATE ${SQLite3_LIBRARIES} ${Protobuf_LIBRARIES})
+# Protobuf v6+ 需要 abseil 链接（通过 pkg-config 获取完整依赖链）
+if(PROTOBUF_PC_FOUND)
+  target_link_directories(codexray-parser PRIVATE ${PROTOBUF_PC_LIBRARY_DIRS})
+  target_link_libraries(codexray-parser PRIVATE ${PROTOBUF_PC_LIBRARIES})
+endif()
 
 if(LLVM_FOUND AND Clang_FOUND)
   llvm_map_components_to_libnames(llvm_libs support core)
