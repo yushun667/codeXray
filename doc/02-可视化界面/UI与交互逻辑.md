@@ -59,7 +59,9 @@
 | 画布 | GraphCore | ReactFlow 容器 | 节点、边、缩放平移、框选、拖拽；背景网格（Background） |
 | 缩放/适应控件 | GraphCore | Controls | React Flow 自带：缩放、适应视图等 |
 | 图节点 | GraphCore | 自定义节点 GraphNode | 左侧 Handle（target）、右侧 Handle（source）；框内多行显示 label，悬停 title 显示全文；点击节点 postMessage(gotoSymbol) 跳转代码 |
-| 边 | GraphCore | 边 | smoothstep 折线、圆角；同 (source,target) 去重，总数上限 2500 |
+| 边 | GraphCore | 边 | smoothstep 折线、圆角、箭头（ArrowClosed）；同 (source,target) 去重，总数上限 2500 |
+| 查询根节点高亮 | GraphCore | 节点样式 | 查询入口函数节点使用橙色底色（`rgb(193,125,55)`）区分，3 级回退匹配策略（querySymbol 精确 → label 首行 → 拓扑度数最高） |
+| 撤销/恢复 | GraphCore | 键盘快捷键 | Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复；基于快照栈（`useGraphHistory`），最多保存 50 步历史；在删除节点、拖拽移动、graphAppend 追加前保存快照；initGraph 初始化时清空历史 |
 | 节点右键菜单 | GraphContextMenu | 浮层菜单 | 固定在鼠标位置；项「继续查询前置节点」「继续查询后置节点」 |
 
 #### 主仓库 · 状态栏（非 Webview）

@@ -2,6 +2,10 @@
  * 图页入口：接收 type + initialData，选 adapter 转 nodes/edges，交给 GraphCore；
  * 接收 graphAppend 时 merge + layout 后更新。与主仓库通过 postMessage 通信。
  *
+ * 撤销/恢复：基于快照栈，Ctrl/Cmd+Z 撤销，Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复。
+ * 快照在以下 4 个变更点保存：graphAppend、deleteNodes、键盘删除、节点拖拽。
+ * initGraph 初始化时清空历史栈（不可撤销初始化）。
+ *
  * 占位状态：
  * - !ready → 「加载图中…」
  * - ready && nodes.length === 0 → 「查询结果为空。…」
@@ -23,6 +27,8 @@ import { adaptDataFlow } from './adapters/dataFlow';
 import { adaptControlFlow } from './adapters/controlFlow';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
+import { useGraphHistory } from './useGraphHistory';
+import type { GraphSnapshot } from './useGraphHistory';
 
 /** 同 (source,target) 仅保留一条边，总数上限避免卡顿 */
 const MAX_EDGES = 2500;
@@ -171,11 +177,56 @@ export function GraphPage() {
   /** 查询根节点 ID 集合：首次 initGraph 时记录，用于孤立节点清理 */
   const rootNodeIdsRef = useRef<Set<string>>(new Set());
 
+  /** 撤销/恢复历史栈 */
+  const { pushSnapshot, undo, redo, clearHistory } = useGraphHistory();
+
+  /** 用 ref 追踪最新 nodes/edges，解决闭包中读取过时 state 的问题 */
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
+
+  /**
+   * 捕获当前图状态快照（用于 pushSnapshot）
+   * @returns 当前 nodes + edges + rootNodeIds 的快照
+   */
+  const captureSnapshot = useCallback((): GraphSnapshot => ({
+    nodes: nodesRef.current,
+    edges: edgesRef.current,
+    rootNodeIds: new Set(rootNodeIdsRef.current),
+  }), []);
+
+  /**
+   * 撤销：恢复到上一个快照状态
+   */
+  const handleUndo = useCallback(() => {
+    const snap = undo(captureSnapshot());
+    if (snap) {
+      setNodes(snap.nodes);
+      setEdges(snap.edges);
+      rootNodeIdsRef.current = snap.rootNodeIds;
+    }
+  }, [undo, captureSnapshot]);
+
+  /**
+   * 恢复：恢复到下一个快照状态
+   */
+  const handleRedo = useCallback(() => {
+    const snap = redo(captureSnapshot());
+    if (snap) {
+      setNodes(snap.nodes);
+      setEdges(snap.edges);
+      rootNodeIdsRef.current = snap.rootNodeIds;
+    }
+  }, [redo, captureSnapshot]);
+
   /**
    * 统一的节点删除函数：删除指定节点 + 清理关联边 + 移除孤立节点
    * 供右键单删、右键批量删、键盘删除三条路径共用
+   * 删除前保存快照以支持撤销
    */
   const deleteNodes = useCallback((idsToRemove: Set<string>) => {
+    pushSnapshot(captureSnapshot());
     setNodes((curNodes) => {
       setEdges((curEdges) => {
         const result = removeNodesAndOrphans(
@@ -187,7 +238,7 @@ export function GraphPage() {
       });
       return curNodes; // 由 queueMicrotask 中的 setNodes 更新
     });
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, pushSnapshot, captureSnapshot]);
 
   useEffect(() => {
     // 非 VSCode 环境（开发调试）：直接标记 ready
@@ -203,6 +254,7 @@ export function GraphPage() {
       if (m.action === 'initGraph') {
         const type = (m.graphType as GraphType) ?? 'call_graph';
         setGraphType(type);
+        clearHistory(); // 初始化时清空撤销/恢复历史
         if (m.nodes?.length || m.edges?.length) {
           const { nodes: n, edges: e, edgesTruncated: trunc } = adaptAndLayout(type, {
             nodes: m.nodes ?? [],
@@ -263,6 +315,7 @@ export function GraphPage() {
       }
 
       if (m.action === 'graphAppend' && (m.nodes?.length || m.edges?.length)) {
+        pushSnapshot(captureSnapshot()); // 追加前保存快照以支持撤销
         const appendData: GraphData = { nodes: m.nodes ?? [], edges: m.edges ?? [] };
         setGraphType((curType) => {
           const { nodes: appendN, edges: appendE } = adaptGraph(curType, appendData);
@@ -393,6 +446,8 @@ export function GraphPage() {
             });
           }}
           onNodesDeleted={(removedIds) => {
+            // 键盘删除前保存快照以支持撤销
+            pushSnapshot(captureSnapshot());
             // 键盘删除后，GraphCore 已移除节点和关联边，
             // 这里只需做孤立节点清理（使用 requestAnimationFrame 等待状态更新后执行）
             requestAnimationFrame(() => {
@@ -411,6 +466,9 @@ export function GraphPage() {
               });
             });
           }}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onBeforeDrag={() => pushSnapshot(captureSnapshot())}
         />
       </div>
       {contextMenu && (

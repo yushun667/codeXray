@@ -6,9 +6,11 @@
  * - 节点双击时从 node.data 取 definition，postMessage(gotoSymbol) 跳转到定义
  * - 节点删除（Delete/Backspace/框选删除）时自动清理关联边
  * - 边：smoothstep 折线，borderRadius 圆角过渡
+ * - 键盘快捷键：Ctrl/Cmd+Z 撤销，Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复
+ * - 节点拖拽开始时触发 onBeforeDrag 回调保存快照
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -57,9 +59,47 @@ export interface GraphCoreProps {
   onSelectionContextMenu?: (selectedNodes: Node<FlowNodeData>[], event: React.MouseEvent) => void;
   /** 键盘删除节点后回调（传入被删除的节点 ID 集合），由 GraphPage 做孤立节点清理 */
   onNodesDeleted?: (removedIds: Set<string>) => void;
+  /** Ctrl/Cmd+Z 撤销回调 */
+  onUndo?: () => void;
+  /** Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复回调 */
+  onRedo?: () => void;
+  /** 节点拖拽开始前回调（用于保存快照） */
+  onBeforeDrag?: () => void;
 }
 
-export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu, onSelectionContextMenu, onNodesDeleted }: GraphCoreProps) {
+export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu, onSelectionContextMenu, onNodesDeleted, onUndo, onRedo, onBeforeDrag }: GraphCoreProps) {
+  // 键盘快捷键：Ctrl/Cmd+Z 撤销，Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      // Ctrl+Shift+Z 或 Ctrl+Y → 恢复（Shift+Z 优先判断，避免被 Z 吞掉）
+      if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) {
+        e.preventDefault();
+        onRedo?.();
+        return;
+      }
+      if (e.key === 'y') {
+        e.preventDefault();
+        onRedo?.();
+        return;
+      }
+      // Ctrl+Z → 撤销
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        onUndo?.();
+        return;
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onUndo, onRedo]);
+
+  // 节点拖拽开始：保存拖拽前快照
+  const onNodeDragStart = useCallback(() => {
+    onBeforeDrag?.();
+  }, [onBeforeDrag]);
+
   // 节点变更：删除节点时先由 React Flow 处理，再通知 GraphPage 做孤立清理
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -132,6 +172,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu,
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeDoubleClick={onNodeDoubleClick}
+        onNodeDragStart={onNodeDragStart}
         onNodeContextMenu={onNodeContextMenuHandler}
         onSelectionContextMenu={onSelectionContextMenuHandler}
         onPaneContextMenu={onPaneContextMenu}
