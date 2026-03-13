@@ -171,13 +171,6 @@ export function GraphPage() {
   /** 查询根节点 ID 集合：首次 initGraph 时记录，用于孤立节点清理 */
   const rootNodeIdsRef = useRef<Set<string>>(new Set());
 
-  const applyData = useCallback((type: GraphType, data: GraphData) => {
-    const { nodes: n, edges: e, edgesTruncated: trunc } = adaptAndLayout(type, data);
-    setNodes(n);
-    setEdges(e);
-    setEdgesTruncated(trunc ?? null);
-  }, []);
-
   /**
    * 统一的节点删除函数：删除指定节点 + 清理关联边 + 移除孤立节点
    * 供右键单删、右键批量删、键盘删除三条路径共用
@@ -211,12 +204,23 @@ export function GraphPage() {
         const type = (m.graphType as GraphType) ?? 'call_graph';
         setGraphType(type);
         if (m.nodes?.length || m.edges?.length) {
-          applyData(type, { nodes: m.nodes ?? [], edges: m.edges ?? [] });
+          const { nodes: n, edges: e, edgesTruncated: trunc } = adaptAndLayout(type, {
+            nodes: m.nodes ?? [],
+            edges: m.edges ?? [],
+          });
           // 记录初始节点 ID 作为查询根节点（首次设置；后续 graphAppend 不覆盖）
           if (rootNodeIdsRef.current.size === 0) {
-            const adapted = adaptGraph(type, { nodes: m.nodes ?? [], edges: m.edges ?? [] });
-            for (const n of adapted.nodes) rootNodeIdsRef.current.add(n.id);
+            for (const nd of n) rootNodeIdsRef.current.add(nd.id);
           }
+          // 标记查询根节点，用于醒目颜色区分
+          for (const nd of n) {
+            if (rootNodeIdsRef.current.has(nd.id)) {
+              (nd.data as FlowNodeData).isRoot = true;
+            }
+          }
+          setNodes(n);
+          setEdges(e);
+          setEdgesTruncated(trunc ?? null);
         }
         setReady(true);
       }
@@ -259,7 +263,7 @@ export function GraphPage() {
       clearTimeout(t1);
       clearTimeout(t2);
     };
-  }, [applyData]);
+  }, []);
 
   // 点击任意位置关闭右键菜单
   useEffect(() => {

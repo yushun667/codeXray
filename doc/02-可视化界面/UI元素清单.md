@@ -117,6 +117,7 @@
 | 背景 | Background | 网格背景 |
 | 缩放/适应控件 | Controls | React Flow 自带：缩放、适应视图等 |
 | 图节点 | GraphNode | 自定义节点：左/右 Handle；框内多行 label；title 悬停全文；双击 postMessage(gotoSymbol) 跳转代码 |
+| 查询根节点 | GraphNode (isRoot) | 初始查询结果中的节点，使用醒目的橙色底色 `rgb(193,125,55)` 区分于普通节点（蓝色 `rgb(81,154,186)`），CSS class `graph-node-root` |
 | 边 | Edge | smoothstep、圆角；按 (source,target) 去重，总数上限 2500 |
 | 框选删除 | 交互 | 左键拖拽框选节点，按 Delete/Backspace 批量删除选中节点及其关联边 |
 

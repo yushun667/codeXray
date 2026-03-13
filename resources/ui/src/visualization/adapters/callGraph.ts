@@ -11,6 +11,8 @@ export interface FlowNodeData {
   definition_range?: { start_line: number; start_column: number; end_line: number; end_column: number };
   usr?: string;
   name?: string;
+  /** 是否为查询根节点（初始查询结果中的节点），用于高亮显示 */
+  isRoot?: boolean;
 }
 
 /** 节点显示名：作用域前缀(qualified_name) + 文件名 + 行号，不使用 USR（供各 adapter 复用） */

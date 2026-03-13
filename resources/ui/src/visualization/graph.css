@@ -1,22 +1,51 @@
-/* 图页样式：节点背景、圆角 8、边框；连线清晰可辨 */
-.react-flow__node-default {
-  background-color: rgb(81, 154, 186) !important;
-  border: 1px solid rgba(255, 255, 255, 0.35) !important;
-  border-radius: 8px !important;
-  color: #fff !important;
+/* 图页样式：自定义节点 graphNode；圆角 8；连线样式 */
+
+/* 自定义节点容器（type: 'graphNode'） */
+.react-flow__node-graphNode {
+  background-color: rgb(81, 154, 186);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  color: #fff;
+  padding: 0;
 }
 
+/* 节点内容区（GraphNode 组件内的 div） */
+.graph-node-inner {
+  color: #fff;
+}
+
+/* 节点悬停 */
+.react-flow__node-graphNode.selectable:hover {
+  box-shadow: 0 2px 6px 2px rgba(0, 0, 0, 0.25);
+}
+
+/* 节点选中：VSCode 焦点高亮边框 */
+.react-flow__node-graphNode.selectable.selected,
+.react-flow__node-graphNode.selectable:focus,
+.react-flow__node-graphNode.selectable:focus-visible,
+.graph-node-selected {
+  box-shadow: 0 0 0 2px var(--vscode-focusBorder, #007acc);
+}
+
+/* 查询根节点：使用醒目的不同底色区分 */
+.react-flow__node-graphNode:has(.graph-node-root) {
+  background-color: rgb(193, 125, 55);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* 连线 */
 .react-flow__edge-path {
-  stroke: rgba(255, 255, 255, 0.6);
+  stroke: rgba(255, 255, 255, 0.55);
   stroke-width: 1.5;
 }
 
-.react-flow__node-default.selectable:hover {
-  box-shadow: 0 1px 4px 1px rgba(0, 0, 0, 0.15);
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--vscode-focusBorder, #007acc);
+  stroke-width: 2;
 }
 
-.react-flow__node-default.selectable.selected,
-.react-flow__node-default.selectable:focus,
-.react-flow__node-default.selectable:focus-visible {
-  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
+/* 画布背景 */
+.react-flow__background {
+  background-color: var(--vscode-editor-background, #1e1e1e);
 }
