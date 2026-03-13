@@ -18,8 +18,8 @@ export function adaptControlFlow(data: GraphData): { nodes: Node<FlowNodeData>[]
 
   apiNodes.forEach((n: ApiNode, i: number) => {
     nodes.push({
-      id: n.id ?? `n${i}`,
-      type: 'customNode',
+      id: String(n.id ?? `n${i}`),
+      type: 'graphNode',
       position: { x: 0, y: 0 },
       data: {
         label: nodeLabel(n),
@@ -32,8 +32,8 @@ export function adaptControlFlow(data: GraphData): { nodes: Node<FlowNodeData>[]
   });
 
   apiEdges.forEach((e: ApiEdge, i: number) => {
-    const src = (e as { from?: string }).from ?? (e as { source?: string }).source;
-    const tgt = (e as { to?: string }).to ?? (e as { target?: string }).target;
+    const src = String((e as { from?: string }).from ?? (e as { source?: string }).source ?? '');
+    const tgt = String((e as { to?: string }).to ?? (e as { target?: string }).target ?? '');
     if (src && tgt) {
       const id = `e-${src}-${tgt}-${i}`;
       edges.push({

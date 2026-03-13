@@ -18,8 +18,8 @@ export function adaptClassGraph(data: GraphData): { nodes: Node<FlowNodeData>[];
 
   apiNodes.forEach((n: ApiNode, i: number) => {
     nodes.push({
-      id: n.id ?? `n${i}`,
-      type: 'customNode',
+      id: String(n.id ?? `n${i}`),
+      type: 'graphNode',
       position: { x: 0, y: 0 },
       data: {
         label: nodeLabel(n),
@@ -32,8 +32,8 @@ export function adaptClassGraph(data: GraphData): { nodes: Node<FlowNodeData>[];
   });
 
   apiEdges.forEach((e: ApiEdge, i: number) => {
-    const src = e.parent ?? (e as { source?: string }).source ?? (e as { from?: string }).from;
-    const tgt = e.child ?? (e as { target?: string }).target ?? (e as { to?: string }).to;
+    const src = String(e.parent ?? (e as { source?: string }).source ?? (e as { from?: string }).from ?? '');
+    const tgt = String(e.child ?? (e as { target?: string }).target ?? (e as { to?: string }).to ?? '');
     if (src && tgt) {
       const id = `e-${src}-${tgt}-${e.relation_type ?? i}`;
       edges.push({

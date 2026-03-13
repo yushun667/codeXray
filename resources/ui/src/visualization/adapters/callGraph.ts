@@ -19,7 +19,7 @@ export function nodeLabel(n: ApiNode): string {
   const def = n.definition;
   if (def?.file != null && def?.line != null) {
     const base = def.file.replace(/^.*[/\\]/, '');
-    return `${name} (${base}:${def.line})`;
+    return `${name}\n(${base}:${def.line})`;
   }
   return name;
 }
@@ -34,9 +34,11 @@ export function adaptCallGraph(data: GraphData): { nodes: Node<FlowNodeData>[]; 
   const apiEdges = data.edges ?? [];
 
   apiNodes.forEach((n: ApiNode, i: number) => {
+    // 解析引擎返回的 id 为整数，React Flow 要求 string 类型
+    const nodeId = String(n.id ?? `n${i}`);
     nodes.push({
-      id: n.id ?? `n${i}`,
-      type: 'customNode',
+      id: nodeId,
+      type: 'graphNode',
       position: { x: 0, y: 0 },
       data: {
         label: nodeLabel(n),
@@ -49,8 +51,9 @@ export function adaptCallGraph(data: GraphData): { nodes: Node<FlowNodeData>[]; 
   });
 
   apiEdges.forEach((e: ApiEdge, i: number) => {
-    const src = e.caller ?? (e as { source?: string }).source;
-    const tgt = e.callee ?? (e as { target?: string }).target;
+    // 解析引擎返回的 caller/callee 为整数，必须转为 string 与节点 id 匹配
+    const src = String(e.caller ?? (e as { source?: string }).source ?? '');
+    const tgt = String(e.callee ?? (e as { target?: string }).target ?? '');
     if (src && tgt) {
       const id = `e-${src}-${tgt}-${e.edge_type ?? i}`;
       edges.push({

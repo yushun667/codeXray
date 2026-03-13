@@ -18,8 +18,8 @@ export function adaptDataFlow(data: GraphData): { nodes: Node<FlowNodeData>[]; e
 
   apiNodes.forEach((n: ApiNode, i: number) => {
     nodes.push({
-      id: n.id ?? `n${i}`,
-      type: 'customNode',
+      id: String(n.id ?? `n${i}`),
+      type: 'graphNode',
       position: { x: 0, y: 0 },
       data: {
         label: nodeLabel(n),
