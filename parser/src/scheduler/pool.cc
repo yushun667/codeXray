@@ -500,6 +500,12 @@ static WorkerProcess ForkOneWorker(const std::string& self_path) {
     return w;
   }
 
+  // 设置 FD_CLOEXEC：exec 后自动关闭父侧 fd，
+  // 防止 worker 进程继承其他 worker 的管道写端，
+  // 导致 close(write_fd) 后 EOF 无法传递的 bug
+  fcntl(parent_to_child[1], F_SETFD, FD_CLOEXEC);  // 父写端：exec 后关闭
+  fcntl(child_to_parent[0], F_SETFD, FD_CLOEXEC);  // 父读端：exec 后关闭
+
   pid_t pid = fork();
   if (pid < 0) {
     LogError("ForkOneWorker: fork() failed");
@@ -607,8 +613,39 @@ static RunResult RunScheduledPreFork(
 
   std::atomic<size_t> done_count{0};
   std::atomic<int>    failed{0};
-  std::mutex          result_mu;   // 保护 on_result 回调
   std::mutex          progress_mu; // 保护 progress 回调
+
+  // ── 异步 DB 写入队列 ────────────────────────────────────────────────
+  // 分析线程将结果推入队列后立即继续下一个 TU，不等 DB 写入。
+  // 单独的写入线程顺序消费队列，避免 SQLite 并发问题。
+  struct ResultItem {
+    size_t idx;
+    TUEntry tu;         // 拷贝，因为原 tu_list 引用在分析线程中
+    CombinedOutput out; // move 语义
+    bool ok;
+  };
+  std::mutex                 rq_mu;
+  std::condition_variable    rq_cv;
+  std::queue<ResultItem>     result_queue;
+  bool                       rq_done = false;  // 分析线程全部完成
+
+  // 启动 DB 写入线程
+  std::thread writer_thread;
+  if (on_result) {
+    writer_thread = std::thread([&] {
+      while (true) {
+        ResultItem item;
+        {
+          std::unique_lock<std::mutex> lk(rq_mu);
+          rq_cv.wait(lk, [&] { return !result_queue.empty() || rq_done; });
+          if (result_queue.empty() && rq_done) break;
+          item = std::move(result_queue.front());
+          result_queue.pop();
+        }
+        on_result(item.tu, item.out, item.ok);
+      }
+    });
+  }
 
   const int timeout_secs = 120;
 
@@ -635,7 +672,6 @@ static RunResult RunScheduledPreFork(
         // 发送请求
         std::string req_data = SerializeTURequestPb(tu);
         if (!WriteFrame(w.write_fd, req_data)) {
-          // Worker 已死（EPIPE）→ 尝试恢复
           LogWarn("Worker write failed on TU: " + tu.source_file);
           goto crash_recovery;
         }
@@ -648,7 +684,6 @@ static RunResult RunScheduledPreFork(
             if (timed_out) {
               LogWarn("Worker timed out (" + std::to_string(timeout_secs) +
                       "s) on TU: " + tu.source_file);
-              // 超时 → kill worker
               kill(w.pid, SIGKILL);
             } else {
               LogWarn("Worker crashed on TU: " + tu.source_file);
@@ -657,13 +692,15 @@ static RunResult RunScheduledPreFork(
           }
 
           // 反序列化响应
-          std::string resp_error;
-          if (!DeserializeWorkerResponsePb(resp_data, out, ok, resp_error)) {
-            LogError("Worker response deserialization failed on TU: " + tu.source_file);
-            goto crash_recovery;
-          }
-          if (!ok) {
-            LogWarn("Worker analysis failed [" + resp_error + "]: " + tu.source_file);
+          {
+            std::string resp_error;
+            if (!DeserializeWorkerResponsePb(resp_data, out, ok, resp_error)) {
+              LogError("Worker response deserialization failed on TU: " + tu.source_file);
+              goto crash_recovery;
+            }
+            if (!ok) {
+              LogWarn("Worker analysis failed [" + resp_error + "]: " + tu.source_file);
+            }
           }
         }
 
@@ -672,19 +709,17 @@ static RunResult RunScheduledPreFork(
 
       crash_recovery:
         {
-          // 回收僵尸
           int status = 0;
           waitpid(w.pid, &status, 0);
           if (WIFSIGNALED(status)) {
             LogWarn("Worker killed by signal " +
                     std::to_string(WTERMSIG(status)));
           }
-          // fork 替代 worker（fork+exec 在多线程下安全，因为 exec 紧跟 fork）
           w = ForkOneWorker(self_path);
           if (w.pid <= 0) {
             LogError("Failed to fork replacement worker, aborting remaining TUs");
             failed.fetch_add(1);
-            break;  // 无法恢复，退出线程
+            break;
           }
           ok = false;
         }
@@ -693,8 +728,12 @@ static RunResult RunScheduledPreFork(
         if (!ok) failed.fetch_add(1);
 
         if (on_result) {
-          std::lock_guard<std::mutex> lk(result_mu);
-          on_result(tu, out, ok);
+          // 推入异步写入队列（不等 DB 写入完成）
+          {
+            std::lock_guard<std::mutex> lk(rq_mu);
+            result_queue.push(ResultItem{idx, tu, std::move(out), ok});
+          }
+          rq_cv.notify_one();
         } else if (ok) {
           result.outputs[idx] = std::move(out);
         }
@@ -708,8 +747,18 @@ static RunResult RunScheduledPreFork(
     });
   }
 
-  // 等待所有线程完成
+  // 等待所有分析线程完成
   for (auto& th : threads) th.join();
+
+  // 通知 DB 写入线程：所有分析完成
+  if (writer_thread.joinable()) {
+    {
+      std::lock_guard<std::mutex> lk(rq_mu);
+      rq_done = true;
+    }
+    rq_cv.notify_one();
+    writer_thread.join();
+  }
 
   // ── 优雅关闭所有 worker ────────────────────────────────────────────
   for (auto& w : worker_procs) ShutdownWorker(w);
