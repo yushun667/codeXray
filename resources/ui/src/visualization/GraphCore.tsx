@@ -46,8 +46,8 @@ export interface GraphCoreProps {
   setNodes: React.Dispatch<React.SetStateAction<Node<FlowNodeData>[]>>;
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   onNodeContextMenu?: (node: Node<FlowNodeData>, event: React.MouseEvent) => void;
-  /** 框选后右键：传入选中节点 ID 列表和鼠标位置 */
-  onSelectionContextMenu?: (selectedNodeIds: string[], event: React.MouseEvent | MouseEvent) => void;
+  /** 框选后右键：传入选中节点列表和鼠标事件 */
+  onSelectionContextMenu?: (selectedNodes: Node<FlowNodeData>[], event: React.MouseEvent) => void;
 }
 
 export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu, onSelectionContextMenu }: GraphCoreProps) {
@@ -94,14 +94,21 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu,
     [onNodeContextMenu]
   );
 
-  // 空白区域右键：若有框选节点则弹出批量菜单，否则仅阻止默认菜单
+  // 空白区域右键：阻止浏览器默认菜单
   const onPaneContextMenu = useCallback((e: React.MouseEvent | MouseEvent) => {
     e.preventDefault();
-    const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
-    if (selectedIds.length > 1 && onSelectionContextMenu) {
-      onSelectionContextMenu(selectedIds, e);
-    }
-  }, [nodes, onSelectionContextMenu]);
+  }, []);
+
+  // 框选区域右键：React Flow 原生 onSelectionContextMenu，转发给 GraphPage
+  const onSelectionContextMenuHandler = useCallback(
+    (ev: React.MouseEvent, selectedNodes: Node<FlowNodeData>[]) => {
+      ev.preventDefault();
+      if (selectedNodes.length > 0 && onSelectionContextMenu) {
+        onSelectionContextMenu(selectedNodes, ev);
+      }
+    },
+    [onSelectionContextMenu]
+  );
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
@@ -113,6 +120,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu,
         onEdgesChange={onEdgesChange}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenuHandler}
+        onSelectionContextMenu={onSelectionContextMenuHandler}
         onPaneContextMenu={onPaneContextMenu}
         defaultEdgeOptions={defaultEdgeOptions}
         // 左键拖拽用于框选节点，中/右键拖拽用于平移画布

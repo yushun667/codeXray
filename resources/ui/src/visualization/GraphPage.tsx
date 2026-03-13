@@ -234,12 +234,12 @@ export function GraphPage() {
           onNodeContextMenu={(node, ev) =>
             setContextMenu({ node, x: ev.clientX, y: ev.clientY })
           }
-          onSelectionContextMenu={(selectedNodeIds, ev) => {
+          onSelectionContextMenu={(selectedNodes, ev) => {
             setContextMenu(null);
             setSelectionMenu({
-              selectedNodeIds,
-              x: (ev as MouseEvent).clientX ?? (ev as React.MouseEvent).clientX,
-              y: (ev as MouseEvent).clientY ?? (ev as React.MouseEvent).clientY,
+              selectedNodeIds: selectedNodes.map((n) => n.id),
+              x: ev.clientX,
+              y: ev.clientY,
             });
           }}
         />
