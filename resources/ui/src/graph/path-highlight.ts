@@ -128,10 +128,14 @@ export async function highlightPath(renderer: GraphRenderer, targetId: string): 
     if (isPath) pathEdgeIds.push(eid);
   }
 
+  // 在设置状态前禁用 hover-activate，否则 pointer-leave 会清除 pathGlow/dimmed
+  renderer.setHoverActivateEnabled(false);
+
   try {
     await graph.setElementState(states);
   } catch (err) {
     console.warn('[path-highlight] setElementState failed:', err);
+    renderer.setHoverActivateEnabled(true);
     return;
   }
 
@@ -250,4 +254,7 @@ export async function clearHighlight(renderer: GraphRenderer): Promise<void> {
   } catch (err) {
     console.warn('[path-highlight] clearHighlight failed:', err);
   }
+
+  // 恢复 hover-activate 行为
+  renderer.setHoverActivateEnabled(true);
 }
