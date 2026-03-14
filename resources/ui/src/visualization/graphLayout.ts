@@ -187,6 +187,76 @@ function computeDirectedRanks(
 }
 
 /**
+ * 按层级对齐节点 x 坐标：
+ * - 负层级（callers，左侧）：同列节点右对齐（右边缘对齐到该列最大 x + NODE_WIDTH/2）
+ * - 正层级（callees，右侧）：同列节点左对齐（左边缘对齐到该列最小 x - NODE_WIDTH/2）
+ * - 零层级（root，中间）：同列节点水平居中对齐
+ *
+ * @param positions 节点 ID → {x, y} 的映射（中心坐标）
+ * @param directedRanks 节点 ID → 有向层级（负=callers，0=root，正=callees）
+ * @param width 节点宽度
+ */
+function alignByRank(
+  positions: Map<string, { x: number; y: number }>,
+  directedRanks: Map<string, number>,
+  width: number
+): void {
+  // 按原始有向层级分组
+  const rankGroups = new Map<number, string[]>();
+  for (const [id, rank] of directedRanks) {
+    if (!positions.has(id)) continue;
+    let group = rankGroups.get(rank);
+    if (!group) {
+      group = [];
+      rankGroups.set(rank, group);
+    }
+    group.push(id);
+  }
+
+  const halfW = width / 2;
+
+  for (const [rank, ids] of rankGroups) {
+    if (ids.length <= 1) continue; // 单节点无需对齐
+
+    if (rank < 0) {
+      // 左侧 callers：右对齐 — 所有节点的右边缘（x + halfW）对齐到该列最大值
+      let maxRight = -Infinity;
+      for (const id of ids) {
+        const pos = positions.get(id)!;
+        const right = pos.x + halfW;
+        if (right > maxRight) maxRight = right;
+      }
+      for (const id of ids) {
+        const pos = positions.get(id)!;
+        pos.x = maxRight - halfW;
+      }
+    } else if (rank > 0) {
+      // 右侧 callees：左对齐 — 所有节点的左边缘（x - halfW）对齐到该列最小值
+      let minLeft = Infinity;
+      for (const id of ids) {
+        const pos = positions.get(id)!;
+        const left = pos.x - halfW;
+        if (left < minLeft) minLeft = left;
+      }
+      for (const id of ids) {
+        const pos = positions.get(id)!;
+        pos.x = minLeft + halfW;
+      }
+    } else {
+      // 中间 root：居中对齐 — 所有节点 x 取平均值
+      let sumX = 0;
+      for (const id of ids) {
+        sumX += positions.get(id)!.x;
+      }
+      const avgX = sumX / ids.length;
+      for (const id of ids) {
+        positions.get(id)!.x = avgX;
+      }
+    }
+  }
+}
+
+/**
  * 使用 dagre 计算双向树状布局：LR 方向，节点间距避免重叠。
  *
  * 当提供 rootNodeIds 时启用"根居中"模式：
@@ -270,6 +340,13 @@ export function getLayoutedElements<T = Record<string, unknown>>(
 
     // 碰撞检测：修正重叠节点
     resolveCollisions(positions, NODE_WIDTH, NODE_HEIGHT, COLLISION_PAD_X, COLLISION_PAD_Y);
+
+    // 按层级对齐：callers 右对齐、callees 左对齐、root 居中
+    if (directedRanks) {
+      alignByRank(positions, directedRanks, NODE_WIDTH);
+      // 对齐后可能产生新的垂直方向重叠，再次碰撞检测
+      resolveCollisions(positions, NODE_WIDTH, NODE_HEIGHT, COLLISION_PAD_X, COLLISION_PAD_Y);
+    }
 
     return nodes.map((node) => {
       const pos = positions.get(node.id);
