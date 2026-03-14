@@ -975,7 +975,7 @@ export class GraphRenderer {
 
     return {
       stroke: this._colors.edgeStroke,
-      lineWidth: 1,
+      lineWidth: 2,
       opacity: 1,
       lineDash: [0, 0],
       shadowBlur: 0,
