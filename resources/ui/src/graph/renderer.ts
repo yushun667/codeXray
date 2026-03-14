@@ -196,6 +196,14 @@ export class GraphRenderer {
             shadowColor: this._colors.highlightStroke,
             shadowBlur: 12,
           },
+          pathGlowDim: {
+            stroke: this._colors.highlightStroke,
+            lineWidth: 2,
+            lineDash: [10, 5],
+            shadowColor: this._colors.highlightStroke,
+            shadowBlur: 4,
+            opacity: 0.65,
+          },
         },
       },
       behaviors: this._buildBehaviors(isLarge) as any,
@@ -955,14 +963,13 @@ export class GraphRenderer {
 
   /**
    * 边样式映射器：根据边数据动态返回样式。
-   * 支持从 data._dashOffset 读取流动虚线动画偏移量。
    * @param d G6 边数据
    */
   private _edgeStyleMapper(d: any): Record<string, unknown> {
     const sourcePort = (d.style as Record<string, unknown>)?.sourcePort ?? 'right';
     const targetPort = (d.style as Record<string, unknown>)?.targetPort ?? 'left';
 
-    const result: Record<string, unknown> = {
+    return {
       stroke: this._colors.edgeStroke,
       lineWidth: 1,
       endArrow: true,
@@ -970,13 +977,6 @@ export class GraphRenderer {
       sourcePort,
       targetPort,
     };
-
-    const dashOffset = (d.data as Record<string, unknown>)?._dashOffset;
-    if (typeof dashOffset === 'number') {
-      result.lineDashOffset = dashOffset;
-    }
-
-    return result;
   }
 
   /**

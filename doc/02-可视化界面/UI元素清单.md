@@ -116,8 +116,8 @@
 | 画布 | AntV G6 Canvas | 节点、边、拖拽、框选、缩放、平移 |
 | 图节点 | G6 rect 节点 | 宽 280、高度动态（≥60）；4 端口（上右下左）；根节点橙色、普通蓝色；双击 postMessage(gotoSymbol) 跳转代码 |
 | 边 | G6 cubic-horizontal | 水平曲线 + 箭头；按 (source,target) 去重，总数上限 2500 |
-| 路径高亮（流动动画） | 状态系统 + rAF 动画 | 单击节点：BFS 找根→目标最短路径，路径节点边框发光（pathGlow 状态 + 阴影），路径边使用 lineDash 虚线 + requestAnimationFrame 驱动的 lineDashOffset 流动动画（~12fps），其余元素暗化（dimmed）；点击画布清除 |
-| 节点折叠/展开 | badge + hideElement/showElement | 有后继的节点右侧显示折叠 badge（▶/▼），折叠时显示隐藏子节点数量（如 "▶ 5"）；点击 badge 或右键菜单触发折叠/展开，使用 G6 hideElement/showElement 隐藏/显示子树；支持嵌套折叠 |
+| 路径高亮（脉冲动画） | 状态系统 + setInterval 脉冲 | 单击节点：BFS 找根→目标最短路径，路径节点设 pathGlow 状态（高亮边框 + 发光阴影），路径边在 pathGlow/pathGlowDim 之间以 600ms 间隔脉冲切换（lineDash 虚线 + 亮度交替），其余元素设 dimmed（半透明）；高亮期间自动禁用 hover-activate 防止状态冲突；点击画布清除 |
+| 节点折叠/展开 | badge + hideElement/showElement | 有后继的节点右侧显示折叠 badge（▶/▼），折叠时显示隐藏子节点数量（如 "▶ 5"）；点击 badge（通过 getCanvasByClient 坐标转换检测）或右键菜单触发折叠/展开，使用 G6 hideElement/showElement 隐藏/显示子树；支持嵌套折叠 |
 | 框选 | brush-select 行为 | Shift+左键拖拽框选节点 |
 | 撤销 | 键盘快捷键 | Ctrl/Cmd+Z 撤销（G6 History 插件） |
 | 恢复 | 键盘快捷键 | Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复 |
