@@ -1,8 +1,8 @@
 /**
- * G6 自定义布局：双向树状层次布局（LR 方向）。
+ * G6 自定义布局：双向树状层次布局（LR 方向）
  *
  * - BFS 计算有向层级：caller 负层级在左，root 为 0，callee 正层级在右
- * - 内部使用 dagre 注入 rank 约束实现根居中分层
+ * - 内部使用 @dagrejs/dagre 注入 rank 约束实现根居中分层
  * - 注册为 G6 自定义布局 'bidirectional-dagre'
  *
  * 使用方式：在图初始化前调用 registerBidirectionalDagre()，
@@ -34,20 +34,20 @@ export interface BidirectionalDagreOptions {
  * - 反向 BFS（沿 target→source 边）：root 的 callers 层级 -1, -2, ...
  * - root 自身层级为 0
  *
- * @param nodeIds 所有节点 ID 集合
- * @param edges 边列表（含 source/target 字段）
- * @param rootIds 根节点 ID 集合
+ * @param nodeIds  - 所有节点 ID 集合
+ * @param edges    - 边列表（含 source/target 字段）
+ * @param rootIds  - 根节点 ID 集合
  * @returns 节点 ID → 层级（负=调用者侧，0=根，正=被调用者侧）
  */
 export function computeDirectedRanks(
   nodeIds: Set<string>,
   edges: { source: string; target: string }[],
-  rootIds: Set<string>
+  rootIds: Set<string>,
 ): Map<string, number> {
   const ranks = new Map<string, number>();
 
   // 构建正向和反向邻接表
-  const forward = new Map<string, string[]>(); // source → [targets]（callees）
+  const forward = new Map<string, string[]>();  // source → [targets]（callees）
   const backward = new Map<string, string[]>(); // target → [sources]（callers）
   for (const id of nodeIds) {
     forward.set(id, []);
@@ -99,7 +99,7 @@ export function computeDirectedRanks(
     }
   }
 
-  // 对未连通节点（BFS 未到达），分配到最右列（callees 最远层 +1）
+  // 对未连通节点（BFS 未到达），分配到最右列
   let maxRank = 0;
   for (const r of ranks.values()) {
     if (r > maxRank) maxRank = r;
@@ -122,7 +122,17 @@ export function computeDirectedRanks(
 class BidirectionalDagreLayout extends BaseLayout<BidirectionalDagreOptions> {
   id = 'bidirectional-dagre';
 
-  async execute(model: G6GraphData, options?: BidirectionalDagreOptions): Promise<G6GraphData> {
+  /**
+   * 执行布局计算
+   *
+   * @param model   - 包含 nodes 和 edges 的图数据
+   * @param options - 布局配置项（rootIds、nodesep、ranksep）
+   * @returns 带有计算后 style.x/y 的图数据
+   */
+  async execute(
+    model: G6GraphData,
+    options?: BidirectionalDagreOptions,
+  ): Promise<G6GraphData> {
     const { nodes = [], edges = [] } = model;
     if (nodes.length === 0) return model;
 
@@ -154,6 +164,7 @@ class BidirectionalDagreLayout extends BaseLayout<BidirectionalDagreOptions> {
 
       if (rootIds.size > 0) {
         directedRanks = computeDirectedRanks(nodeIdSet, edgeList, rootIds);
+        // dagre rank 必须 >= 0，计算偏移量
         let minRank = 0;
         for (const r of directedRanks.values()) {
           if (r < minRank) minRank = r;
@@ -164,17 +175,17 @@ class BidirectionalDagreLayout extends BaseLayout<BidirectionalDagreOptions> {
       // 添加节点到 dagre（含 rank 约束）
       for (const node of nodes) {
         const nid = String(node.id);
-        const nodeData: { width: number; height: number; rank?: number } = {
+        const nodeObj: { width: number; height: number; rank?: number } = {
           width: NODE_WIDTH,
           height: NODE_HEIGHT,
         };
         if (directedRanks) {
           const rank = directedRanks.get(nid);
           if (rank != null) {
-            nodeData.rank = rank + rankOffset;
+            nodeObj.rank = rank + rankOffset;
           }
         }
-        g.setNode(nid, nodeData);
+        g.setNode(nid, nodeObj);
       }
 
       // 添加边到 dagre
@@ -206,17 +217,18 @@ class BidirectionalDagreLayout extends BaseLayout<BidirectionalDagreOptions> {
         edges,
       };
     } catch {
-      // dagre 失败时使用网格后备布局
-      return this.fallbackLayout(model);
+      // dagre 布局失败时使用网格后备布局
+      return this.fallbackGridLayout(model);
     }
   }
 
   /**
-   * dagre 失败时的网格后备布局
-   * @param model 原始图数据
+   * dagre 布局失败时的网格后备布局
+   *
+   * @param model - 原始图数据
    * @returns 带网格位置的图数据
    */
-  private fallbackLayout(model: G6GraphData): G6GraphData {
+  private fallbackGridLayout(model: G6GraphData): G6GraphData {
     const { nodes = [], edges = [] } = model;
     const COLS = 5;
     const ROW_H = NODE_HEIGHT + NODE_SEP;
@@ -244,6 +256,10 @@ let registered = false;
  */
 export function registerBidirectionalDagre(): void {
   if (registered) return;
-  register(ExtensionCategory.LAYOUT, 'bidirectional-dagre', BidirectionalDagreLayout as any);
+  register(
+    ExtensionCategory.LAYOUT,
+    'bidirectional-dagre',
+    BidirectionalDagreLayout as any,
+  );
   registered = true;
 }

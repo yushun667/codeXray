@@ -1,8 +1,14 @@
 /**
- * 节点右键菜单：
- * - 「继续查询前置节点」「继续查询后置节点」— 展开调用链
- * - 「跳转到定义」— 跳转到节点代码定义位置
- * - 「删除节点」— 从图中移除该节点及其关联边
+ * 图可视化右键菜单组件
+ *
+ * GraphContextMenu:    单节点右键菜单
+ *   - 查询调用节点（展开该节点的调用者）
+ *   - 查询被调用节点（展开该节点的被调用者）
+ *   - 跳转到定义
+ *   - 删除节点
+ *
+ * SelectionContextMenu: 框选后右键菜单
+ *   - 批量删除选中节点
  *
  * postMessage(queryPredecessors / querySuccessors / gotoSymbol) 发给主仓库
  */
@@ -17,22 +23,7 @@ function postToHost(msg: unknown): void {
   getVscodeApi()?.postMessage(msg);
 }
 
-export interface GraphContextMenuProps {
-  /** 当前图类型 */
-  graphType: GraphType;
-  /** 右键点击的节点 ID */
-  nodeId: string;
-  /** 右键点击的节点数据 */
-  nodeData: FlowNodeData;
-  /** 菜单在视口中的 X 坐标 */
-  x: number;
-  /** 菜单在视口中的 Y 坐标 */
-  y: number;
-  /** 关闭菜单的回调 */
-  onClose: () => void;
-  /** 删除节点的回调（从图中移除该节点及关联边） */
-  onDeleteNode: (nodeId: string) => void;
-}
+// ─── 菜单项组件 ─────────────────────────────────────────
 
 /** 菜单项基础样式 */
 const itemBaseStyle: React.CSSProperties = {
@@ -57,10 +48,11 @@ const separatorStyle: React.CSSProperties = {
 };
 
 /**
- * 菜单项组件：统一 hover 效果
- * @param label 菜单项文字
- * @param onClick 点击回调
- * @param disabled 是否禁用
+ * 菜单项：统一 hover 效果
+ *
+ * @param label    - 菜单项文字
+ * @param onClick  - 点击回调
+ * @param disabled - 是否禁用
  */
 function MenuItem({
   label,
@@ -96,7 +88,21 @@ function MenuItem({
   );
 }
 
-// ─── 框选右键菜单 ─────────────────────────────────────────
+// ─── 菜单容器样式 ───────────────────────────────────────
+
+/** 右键菜单浮层样式 */
+const menuContainerStyle: React.CSSProperties = {
+  position: 'fixed',
+  zIndex: 1000,
+  minWidth: 180,
+  padding: 4,
+  background: 'var(--vscode-editorWidget-background)',
+  border: '1px solid var(--vscode-editorWidget-border)',
+  borderRadius: 4,
+  boxShadow: 'var(--vscode-widget-shadow)',
+};
+
+// ─── 框选右键菜单 ───────────────────────────────────────
 
 export interface SelectionContextMenuProps {
   /** 选中的节点 ID 列表 */
@@ -127,18 +133,7 @@ export function SelectionContextMenu({
     <div
       className="graph-context-menu"
       onMouseDown={(e) => e.stopPropagation()}
-      style={{
-        position: 'fixed',
-        left: x,
-        top: y,
-        zIndex: 1000,
-        minWidth: 180,
-        padding: 4,
-        background: 'var(--vscode-editorWidget-background)',
-        border: '1px solid var(--vscode-editorWidget-border)',
-        borderRadius: 4,
-        boxShadow: 'var(--vscode-widget-shadow)',
-      }}
+      style={{ ...menuContainerStyle, left: x, top: y }}
     >
       <MenuItem
         label={`删除选中的 ${count} 个节点`}
@@ -151,11 +146,29 @@ export function SelectionContextMenu({
   );
 }
 
-// ─── 单节点右键菜单 ───────────────────────────────────────
+// ─── 单节点右键菜单 ─────────────────────────────────────
+
+export interface GraphContextMenuProps {
+  /** 当前图类型 */
+  graphType: GraphType;
+  /** 右键点击的节点 ID */
+  nodeId: string;
+  /** 右键点击的节点数据 */
+  nodeData: FlowNodeData;
+  /** 菜单在视口中的 X 坐标 */
+  x: number;
+  /** 菜单在视口中的 Y 坐标 */
+  y: number;
+  /** 关闭菜单的回调 */
+  onClose: () => void;
+  /** 删除节点的回调（从图中移除该节点及关联边） */
+  onDeleteNode: (nodeId: string) => void;
+}
 
 /**
  * 图节点右键菜单组件
- * 提供：展开前置/后置节点、跳转到定义、删除节点 四个操作
+ *
+ * 提供：查询调用节点、查询被调用节点、跳转到定义、删除节点 四个操作
  */
 export function GraphContextMenu({
   graphType,
@@ -171,7 +184,7 @@ export function GraphContextMenu({
   const column = nodeData.definition?.column ?? 1;
   const symbol = nodeData.name ?? nodeData.label ?? nodeId;
 
-  /** 发送继续查询请求（展开前置/后置节点） */
+  /** 发送继续查询请求（展开调用节点 / 被调用节点） */
   const sendQuery = (action: 'queryPredecessors' | 'querySuccessors') => {
     postToHost({ action, graphType, nodeId, symbol, filePath: file, file });
     onClose();
@@ -196,23 +209,17 @@ export function GraphContextMenu({
   return (
     <div
       className="graph-context-menu"
-      // 阻止 mousedown 冒泡，避免触发 GraphPage 中关闭菜单的 document 监听
       onMouseDown={(e) => e.stopPropagation()}
-      style={{
-        position: 'fixed',
-        left: x,
-        top: y,
-        zIndex: 1000,
-        minWidth: 180,
-        padding: 4,
-        background: 'var(--vscode-editorWidget-background)',
-        border: '1px solid var(--vscode-editorWidget-border)',
-        borderRadius: 4,
-        boxShadow: 'var(--vscode-widget-shadow)',
-      }}
+      style={{ ...menuContainerStyle, left: x, top: y }}
     >
-      <MenuItem label="展开前置节点" onClick={() => sendQuery('queryPredecessors')} />
-      <MenuItem label="展开后置节点" onClick={() => sendQuery('querySuccessors')} />
+      <MenuItem
+        label="查询调用节点"
+        onClick={() => sendQuery('queryPredecessors')}
+      />
+      <MenuItem
+        label="查询被调用节点"
+        onClick={() => sendQuery('querySuccessors')}
+      />
       <div style={separatorStyle} />
       <MenuItem
         label="跳转到定义"

@@ -1,15 +1,16 @@
 /**
- * 图页入口：接收 host 的 initGraph / graphAppend 消息，
+ * 图页入口组件
+ *
+ * 接收 host 的 initGraph / graphAppend 消息，
  * 通过 G6Graph ref 控制图实例；管理右键菜单状态。
  *
- * 占位状态：
- * - !ready → 「加载图中…」
- * - ready && nodeCount === 0 → 「查询结果为空。…」
- * - edges 超过 MAX_EDGES → 顶部提示横幅
+ * 状态展示：
+ *   !ready                → 「加载图中…」
+ *   ready && nodeCount===0 → 「查询结果为空。…」
+ *   edges 超过上限         → 顶部提示横幅
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { NodeData, EdgeData } from '@antv/g6';
 import type { GraphType, GraphData } from '../shared/types';
 import type { HostToGraphMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
@@ -28,13 +29,14 @@ const MAX_EDGES = 2500;
 
 /**
  * 根据图类型选择对应 adapter 转换数据
- * @param graphType 图类型
- * @param data 原始 API 数据
+ *
+ * @param graphType - 图类型（call_graph / class_graph / data_flow / control_flow）
+ * @param data      - 原始 API 数据
  * @returns adapter 输出的通用节点/边
  */
 function adaptGraph(
   graphType: GraphType,
-  data: GraphData
+  data: GraphData,
 ): { nodes: AdapterNode<FlowNodeData>[]; edges: AdapterEdge[] } {
   switch (graphType) {
     case 'call_graph':
@@ -51,18 +53,22 @@ function adaptGraph(
 }
 
 /**
- * 识别查询入口节点（根节点）。
- * 策略：1) querySymbol name 精确匹配  2) label 首行匹配  3) 拓扑分析（度数最高）
+ * 识别查询入口节点（根节点）
  *
- * @param nodes adapter 输出的节点
- * @param edges adapter 输出的边
- * @param querySymbol 查询入口符号名
+ * 匹配策略：
+ *   1) querySymbol name 精确匹配
+ *   2) label 首行匹配
+ *   3) 拓扑分析（度数最高的节点）
+ *
+ * @param nodes       - adapter 输出的节点
+ * @param edges       - adapter 输出的边
+ * @param querySymbol - 查询入口符号名
  * @returns 查询根节点 ID 集合
  */
 function identifyRootNodes(
   nodes: AdapterNode<FlowNodeData>[],
   edges: AdapterEdge[],
-  querySymbol?: string
+  querySymbol?: string,
 ): Set<string> {
   const rootIds = new Set<string>();
   let found = false;
@@ -119,6 +125,11 @@ function identifyRootNodes(
   return rootIds;
 }
 
+/**
+ * 图页面主组件
+ *
+ * 负责：消息监听、数据适配、G6Graph 控制、右键菜单渲染
+ */
 export function GraphPage() {
   const [graphType, setGraphType] = useState<GraphType>('call_graph');
   const [ready, setReady] = useState(false);
@@ -140,9 +151,9 @@ export function GraphPage() {
 
   /** G6Graph 组件 ref */
   const g6Ref = useRef<G6GraphHandle>(null);
-  /** 查询根节点 ID 集合 */
+  /** 查询根节点 ID 集合（ref 版本避免闭包过时） */
   const queryRootIdsRef = useRef<Set<string>>(new Set());
-  /** 当前图类型（ref 版本，避免 useEffect 闭包过时） */
+  /** 当前图类型（ref 版本避免 useEffect 闭包过时） */
   const graphTypeRef = useRef<GraphType>('call_graph');
 
   // ─── 消息处理 ───
@@ -178,22 +189,23 @@ export function GraphPage() {
           const g6Data = toG6Data(rawN, rawE);
 
           // 4. 检查边截断
-          const { edges: limitedE, originalCount } =
+          const { edges: limitedE, truncated, originalCount } =
             deduplicateAndLimitEdges(g6Data.edges);
-          setEdgesTruncated(
-            originalCount > limitedE.length ? originalCount : null
-          );
+          setEdgesTruncated(truncated ? originalCount : null);
 
           // 5. 初始化图
           g6Ref.current?.setData(
             { nodes: g6Data.nodes, edges: limitedE },
-            rootIds
+            rootIds,
           );
         }
         setReady(true);
       }
 
-      if (m.action === 'graphAppend' && (m.nodes?.length || m.edges?.length)) {
+      if (
+        m.action === 'graphAppend' &&
+        (m.nodes?.length || m.edges?.length)
+      ) {
         const curType = graphTypeRef.current;
         const { nodes: appendN, edges: appendE } = adaptGraph(curType, {
           nodes: m.nodes ?? [],
@@ -201,7 +213,10 @@ export function GraphPage() {
         });
 
         const g6AppendData = toG6Data(appendN, appendE);
-        g6Ref.current?.appendData(g6AppendData, queryRootIdsRef.current);
+        g6Ref.current?.appendData(
+          g6AppendData,
+          queryRootIdsRef.current,
+        );
       }
     };
 
@@ -238,6 +253,8 @@ export function GraphPage() {
   }, []);
 
   // ─── 渲染 ───
+
+  // 加载中状态
   if (!ready) {
     return (
       <div
@@ -254,6 +271,7 @@ export function GraphPage() {
     );
   }
 
+  // 空结果状态
   if (ready && nodeCount === 0) {
     return (
       <div
@@ -277,6 +295,7 @@ export function GraphPage() {
     );
   }
 
+  // 正常图展示
   return (
     <div
       style={{
@@ -287,6 +306,7 @@ export function GraphPage() {
         background: 'var(--vscode-editor-background, #1e1e1e)',
       }}
     >
+      {/* 边数截断提示 */}
       {edgesTruncated != null && (
         <div
           style={{
@@ -302,6 +322,8 @@ export function GraphPage() {
           {edgesTruncated} 条），以保持流畅。
         </div>
       )}
+
+      {/* G6 图画布 */}
       <div style={{ flex: 1, minHeight: 0 }}>
         <G6Graph
           ref={g6Ref}
@@ -315,6 +337,8 @@ export function GraphPage() {
           onNodeCountChange={handleNodeCountChange}
         />
       </div>
+
+      {/* 单节点右键菜单 */}
       {contextMenu && (
         <GraphContextMenu
           graphType={graphType}
@@ -329,6 +353,8 @@ export function GraphPage() {
           }}
         />
       )}
+
+      {/* 框选右键菜单 */}
       {selectionMenu && (
         <SelectionContextMenu
           selectedNodeIds={selectionMenu.selectedNodeIds}

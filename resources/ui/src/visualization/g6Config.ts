@@ -1,28 +1,39 @@
 /**
- * G6 图配置工厂：导出节点/边/行为/插件配置常量和创建函数。
+ * G6 图配置工厂
  *
- * 节点使用 rect 类型，4 个端口（上右下左），根节点橙色高亮。
- * 边使用 cubic-horizontal 曲线 + 箭头。
+ * 导出节点/边/行为/插件配置常量和 GraphOptions 创建函数。
+ *
+ * 节点：rect 类型，4 个连接桩（上右下左），根节点橙色高亮。
+ * 边：cubic-horizontal 曲线 + 箭头，自动连接最近端口。
  * 行为：拖拽画布、滚轮缩放、点击选中、Shift 框选、节点拖拽。
  * 插件：History（撤销/恢复）。
  */
 
 import type { GraphOptions, NodeData } from '@antv/g6';
 
-/** 布局占位宽，取 minWidth(200)~maxWidth(360) 中间 */
+// ─── 布局尺寸常量 ────────────────────────────────────────
+
+/** 节点默认宽度 */
 export const NODE_WIDTH = 280;
-/** 布局占位高 */
+/** 节点默认高度 */
 export const NODE_HEIGHT = 60;
 /** 层间距（水平方向，LR 布局） */
 export const RANK_SEP = 120;
 /** 同层节点间距（垂直方向） */
 export const NODE_SEP = 40;
 
+// ─── 颜色常量 ────────────────────────────────────────────
+
+/** 根节点填充色 */
+const ROOT_FILL = 'rgb(193, 125, 55)';
+/** 普通节点填充色 */
+const NORMAL_FILL = 'rgb(81, 154, 186)';
+
 /**
  * 创建 G6 Graph 配置对象
  *
  * @param container - DOM 容器元素
- * @returns G6 GraphOptions（不含 data，由调用方通过 graph.setData / graph.draw 设置）
+ * @returns GraphOptions（不含 data，由调用方通过 graph.setData / graph.render 设置）
  */
 export function createGraphOptions(container: HTMLElement): GraphOptions {
   return {
@@ -34,22 +45,21 @@ export function createGraphOptions(container: HTMLElement): GraphOptions {
     node: {
       type: 'rect',
       style: {
+        /* 尺寸：根据 label 行数动态计算高度 */
         size: (d: NodeData) => {
-          // 根据 label 行数动态计算高度
           const label = (d.data?.label as string) ?? '';
           const lines = label.split('\n').length;
           return [NODE_WIDTH, Math.max(NODE_HEIGHT, 24 + lines * 20)];
         },
         radius: 8,
-        fill: (d: NodeData) =>
-          d.data?.isRoot ? 'rgb(193, 125, 55)' : 'rgb(81, 154, 186)',
+        /* 填充色：根节点橙色、普通蓝色 */
+        fill: (d: NodeData) => (d.data?.isRoot ? ROOT_FILL : NORMAL_FILL),
         stroke: (d: NodeData) =>
-          d.data?.isRoot
-            ? 'rgba(255, 255, 255, 0.5)'
-            : 'rgba(255, 255, 255, 0.35)',
+          d.data?.isRoot ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.35)',
         lineWidth: 1,
         cursor: 'grab',
-        // 标签
+
+        /* 标签 */
         labelText: (d: NodeData) => (d.data?.label as string) ?? '',
         labelFill: '#ffffff',
         labelFontSize: 13,
@@ -57,18 +67,18 @@ export function createGraphOptions(container: HTMLElement): GraphOptions {
         labelPlacement: 'center',
         labelWordWrap: true,
         labelWordWrapWidth: NODE_WIDTH - 24,
-        // 端口：四方向（上右下左），边自动选择最近端口
+
+        /* 连接桩：四方向（上右下左），边自动选择最近端口连接 */
+        port: true,
         ports: [
           { key: 'port-top', placement: [0.5, 0] as [number, number] },
           { key: 'port-right', placement: [1, 0.5] as [number, number] },
           { key: 'port-bottom', placement: [0.5, 1] as [number, number] },
           { key: 'port-left', placement: [0, 0.5] as [number, number] },
         ],
-        portR: 3,
-        portFill: '#ffffff',
-        portLineWidth: 1,
-        portStroke: 'rgba(255, 255, 255, 0.5)',
       } as Record<string, unknown>,
+
+      /* 节点状态样式 */
       state: {
         selected: {
           stroke: '#007acc',
@@ -110,7 +120,7 @@ export function createGraphOptions(container: HTMLElement): GraphOptions {
       },
     },
 
-    // ─── 默认布局（通用 dagre LR，自定义布局在 g6Layout.ts 中注册后覆盖） ───
+    // ─── 默认布局 (会在 G6Graph 中被自定义布局覆盖) ───
     layout: {
       type: 'dagre',
       rankdir: 'LR',
@@ -120,13 +130,13 @@ export function createGraphOptions(container: HTMLElement): GraphOptions {
 
     // ─── 交互行为 ───
     behaviors: [
-      // 拖拽画布（左键拖拽）
+      // 拖拽画布
       'drag-canvas',
       // 滚轮缩放
       'zoom-canvas',
       // 点击选中
       'click-select',
-      // Shift+左键框选
+      // Shift + 左键框选
       {
         type: 'brush-select',
         key: 'brush-select',
@@ -145,7 +155,7 @@ export function createGraphOptions(container: HTMLElement): GraphOptions {
 
     // 缩放范围
     zoomRange: [0.05, 2],
-    // 初始渲染不启用动画
+    // 初始渲染不启用动画（避免首次加载闪烁）
     animation: false,
   };
 }
