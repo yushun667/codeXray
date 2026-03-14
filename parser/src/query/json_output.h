@@ -17,7 +17,8 @@ struct QueryOptions {
   std::string file_path;
   int         line   = 0;
   int         column = 0;
-  int         depth  = 3;
+  int         depth  = 2;
+  std::string direction = "both";  // both | callers | callees
   bool        lazy   = false;
   bool        verbose = false;
   unsigned    parallel = 0;
@@ -25,7 +26,8 @@ struct QueryOptions {
 };
 
 std::string QueryCallGraphJson(sqlite3* db, const std::string& symbol,
-                                const std::string& file_path, int depth);
+                                const std::string& file_path, int depth,
+                                const std::string& direction = "both");
 
 std::string QueryClassGraphJson(sqlite3* db, const std::string& symbol,
                                  const std::string& file_path);

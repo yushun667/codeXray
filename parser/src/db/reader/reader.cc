@@ -298,32 +298,54 @@ std::vector<QueryNode> QuerySymbolsByName(sqlite3* db, const std::string& name,
 
 // ─── call graph BFS ───────────────────────────────────────────────────────────
 
-/// BFS 展开时的节点数量上限（安全阀）
-static constexpr size_t kMaxBfsNodes = 500;
+/// 判断某个符号路径是否属于系统/外部库路径（应完全排除出结果）
+static bool IsSystemPath(const std::string& path) {
+  if (path.empty()) return false;
+  // macOS / Linux 系统头文件
+  if (path.compare(0, 5, "/usr/") == 0)        return true;
+  if (path.compare(0, 9, "/Library/") == 0)    return true;
+  if (path.compare(0, 21, "/Applications/Xcode") == 0) return true;
+  // SDK / toolchain 内置
+  if (path.find("/clang/") != std::string::npos &&
+      path.find("/include/") != std::string::npos) return true;
+  return false;
+}
 
-/// 判断某个符号是否为"噪声符号"——高连接度但语义价值低的节点。
-/// 噪声符号仍会作为叶子出现在结果中（保留直接边），但不会被加入 BFS 队列
-/// 继续展开，从而避免通过这些"枢纽节点"扇出到整个代码库。
-///
-/// 过滤类别：
-///   1. 构造函数 / 析构函数（kind = constructor / destructor）
-///   2. operator 重载（name 以 "operator" 开头）
-///   3. std:: 命名空间的方法（容器/迭代器等基础设施）
-///   4. 高频 trivial accessor（size, empty, begin, end 等）
-static bool IsNoiseSymbol(const QueryNode& node) {
-  // 1. 构造函数 / 析构函数
+/// 判断某个符号是否应被完全排除出调用链结果。
+/// 排除类别：
+///   1. 标准库符号（std::, __builtin_, __cxa_, llvm::detail:: 等命名空间）
+///   2. 系统路径中定义的符号（/usr/, /Library/, Xcode SDK 等）
+///   3. 无定义位置的外部符号（def_file 为空且 def_line == 0，即纯 forward decl）
+///   4. 构造函数 / 析构函数（调用链噪声大，连接度极高）
+///   5. operator 重载
+///   6. 高频 trivial accessor（size, empty, begin, end 等）
+static bool ShouldExclude(const QueryNode& node) {
+  const auto& qn = node.qualified_name;
+  const auto& name = node.name;
+
+  // 1. 标准库 / 编译器内置命名空间前缀
+  static const std::vector<std::string> kExcludedPrefixes = {
+    "std::", "__", "llvm::detail::", "llvm::sys::detail::",
+    "clang::detail::", "_LIBCPP_", "boost::",
+  };
+  for (const auto& pfx : kExcludedPrefixes) {
+    if (qn.size() >= pfx.size() && qn.compare(0, pfx.size(), pfx) == 0) return true;
+    if (name.size() >= pfx.size() && name.compare(0, pfx.size(), pfx) == 0) return true;
+  }
+
+  // 2. 系统路径中定义的符号
+  if (IsSystemPath(node.def_file)) return true;
+
+  // 3. 无定义位置的外部符号（forward decl / 外部库接口）
+  if (node.def_file.empty() && node.def_line == 0) return true;
+
+  // 4. 构造函数 / 析构函数
   if (node.kind == "constructor" || node.kind == "destructor") return true;
 
-  // 2. operator 重载
-  const auto& name = node.name;
+  // 5. operator 重载
   if (name.size() >= 8 && name.compare(0, 8, "operator") == 0) return true;
 
-  // 3. std:: 命名空间
-  const auto& qn = node.qualified_name;
-  if (qn.size() >= 5 && qn.compare(0, 5, "std::") == 0) return true;
-
-  // 4. trivial accessor / 基础方法
-  // 这些方法在几乎所有类中都存在，连接度极高但无分析价值
+  // 6. trivial accessor / 基础方法（几乎所有类都有，连接度高但无分析价值）
   static const std::unordered_set<std::string> kTrivialNames = {
     "size", "empty", "begin", "end", "cbegin", "cend",
     "rbegin", "rend", "front", "back", "data", "length",
@@ -337,7 +359,8 @@ static bool IsNoiseSymbol(const QueryNode& node) {
 }
 
 CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_name,
-                                const std::string& file_path, int depth) {
+                                const std::string& file_path, int depth,
+                                CallDirection direction) {
   CallGraphResult res;
   int64_t root_id = ResolveSymbolId(db, symbol_usr_or_name, file_path);
   if (!root_id) return res;
@@ -347,22 +370,23 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
   std::unordered_set<int64_t> visited;
   std::unordered_set<int64_t> edge_set;
 
-  // BFS forward (callees) and backward (callers)
-  struct Work { int64_t id; int depth_remaining; };
+  // dir 字段：kBoth 仅用于根节点（第一层双向扩展），
+  // 后续节点固定为 kForward 或 kBackward，只沿发现方向继续。
+  struct Work { int64_t id; int depth_remaining; CallDirection dir; };
   std::queue<Work> q;
-  q.push({root_id, depth});
+  q.push({root_id, depth, direction});
   visited.insert(root_id);
   node_map[root_id] = LoadSymbolNode(db, root_id, fc);
 
   while (!q.empty()) {
-    // 安全阀：已达到节点上限时停止 BFS 展开
-    if (node_map.size() >= kMaxBfsNodes) break;
-
-    auto [cur_id, rem] = q.front(); q.pop();
+    auto [cur_id, rem, cur_dir] = q.front(); q.pop();
     if (rem <= 0) continue;
 
-    // Forward: callees
-    {
+    const bool do_forward  = (cur_dir == CallDirection::kBoth || cur_dir == CallDirection::kForward);
+    const bool do_backward = (cur_dir == CallDirection::kBoth || cur_dir == CallDirection::kBackward);
+
+    // Forward: callees（被调用节点，图的右侧方向）
+    if (do_forward) {
       sqlite3_stmt* s = nullptr;
       sqlite3_prepare_v2(db,
           "SELECT ce.id, ce.callee_id, ce.edge_type, ce.call_file_id, ce.call_line,"
@@ -372,10 +396,11 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
         int64_t eid     = sqlite3_column_int64(s, 0);
         int64_t callee  = sqlite3_column_int64(s, 1);
         if (edge_set.count(eid)) continue;
-        edge_set.insert(eid);
         if (!node_map.count(callee)) {
           node_map[callee] = LoadSymbolNode(db, callee, fc);
         }
+        if (ShouldExclude(node_map[callee])) continue;
+        edge_set.insert(eid);
         QueryEdge e;
         e.id        = eid;
         e.from_id   = cur_id;
@@ -385,20 +410,16 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
         e.call_line   = sqlite3_column_int(s, 4);
         e.call_column = sqlite3_column_int(s, 5);
         res.edges.push_back(e);
-        // 噪声符号只作为叶子节点保留，不加入 BFS 队列继续展开
         if (!visited.count(callee)) {
           visited.insert(callee);
-          const auto& callee_node = node_map[callee];
-          if (!IsNoiseSymbol(callee_node)) {
-            q.push({callee, rem - 1});
-          }
+          q.push({callee, rem - 1, CallDirection::kForward});
         }
       }
       sqlite3_finalize(s);
     }
 
-    // Backward: callers
-    {
+    // Backward: callers（调用节点，图的左侧方向）
+    if (do_backward) {
       sqlite3_stmt* s = nullptr;
       sqlite3_prepare_v2(db,
           "SELECT ce.id, ce.caller_id, ce.edge_type, ce.call_file_id, ce.call_line,"
@@ -408,10 +429,11 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
         int64_t eid    = sqlite3_column_int64(s, 0);
         int64_t caller = sqlite3_column_int64(s, 1);
         if (edge_set.count(eid)) continue;
-        edge_set.insert(eid);
         if (!node_map.count(caller)) {
           node_map[caller] = LoadSymbolNode(db, caller, fc);
         }
+        if (ShouldExclude(node_map[caller])) continue;
+        edge_set.insert(eid);
         QueryEdge e;
         e.id        = eid;
         e.from_id   = caller;
@@ -421,13 +443,9 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
         e.call_line   = sqlite3_column_int(s, 4);
         e.call_column = sqlite3_column_int(s, 5);
         res.edges.push_back(e);
-        // 噪声符号只作为叶子节点保留，不加入 BFS 队列继续展开
         if (!visited.count(caller)) {
           visited.insert(caller);
-          const auto& caller_node = node_map[caller];
-          if (!IsNoiseSymbol(caller_node)) {
-            q.push({caller, rem - 1});
-          }
+          q.push({caller, rem - 1, CallDirection::kBackward});
         }
       }
       sqlite3_finalize(s);
@@ -435,7 +453,9 @@ CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_nam
   }
 
   res.nodes.reserve(node_map.size());
-  for (auto& [k, v] : node_map) res.nodes.push_back(v);
+  for (auto& [k, v] : node_map) {
+    if (!ShouldExclude(v)) res.nodes.push_back(v);
+  }
   return res;
 }
 

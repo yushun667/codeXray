@@ -19,6 +19,8 @@ const SUBCOMMAND_LIST_RUNS = 'list-runs';
 export interface QueryOptions {
   symbol?: string;
   file?: string;
+  depth?: number;
+  direction?: 'both' | 'callers' | 'callees';
   [key: string]: unknown;
 }
 
@@ -195,6 +197,8 @@ export class ParserService {
     if (type === 'call_graph') {
       const depth = typeof options.depth === 'number' && options.depth > 0 ? options.depth : this.config.getQueryDepth();
       args.push('--depth', String(depth));
+      const dir = options.direction ?? 'both';
+      args.push('--direction', dir);
     }
     if (options.symbol) args.push('--symbol', options.symbol);
     if (options.file) args.push('--file', path.isAbsolute(options.file) ? options.file : path.join(project, options.file));

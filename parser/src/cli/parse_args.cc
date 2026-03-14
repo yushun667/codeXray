@@ -1,164 +1,133 @@
-/**
- * 解析引擎 CLI 参数解析实现
- */
-
-#include "cli/parse_args.h"
-#include <cstdlib>
+#include "parse_args.h"
 #include <cstring>
 #include <sstream>
 
 namespace codexray {
 
-static bool ConsumeArg(int* i, int argc, char* argv[], const char* name, std::string* out) {
-  if (std::strcmp(argv[*i], name) != 0) return false;
-  if (*i + 1 >= argc) return false;
-  *out = argv[*i + 1];
-  *i += 2;
-  return true;
+namespace {
+
+// Split comma-separated string into vector
+static std::vector<std::string> SplitComma(const std::string& s) {
+  std::vector<std::string> result;
+  std::istringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    if (!tok.empty()) result.push_back(tok);
+  }
+  return result;
 }
 
-static void SplitComma(const std::string& s, std::vector<std::string>* out) {
-  out->clear();
-  std::string cur;
-  for (char c : s) {
-    if (c == ',') {
-      if (!cur.empty()) out->push_back(cur);
-      cur.clear();
-    } else
-      cur.push_back(c);
+// Check if argv[i] matches flag and advance to the value (next arg or =val)
+static bool GetFlagValue(int argc, char* argv[], int& i,
+                          const char* flag, std::string& out) {
+  size_t flen = strlen(flag);
+  if (strncmp(argv[i], flag, flen) == 0) {
+    if (argv[i][flen] == '=') {
+      out = argv[i] + flen + 1;
+      return true;
+    }
+    if (argv[i][flen] == '\0' && i + 1 < argc) {
+      out = argv[++i];
+      return true;
+    }
   }
-  if (!cur.empty()) out->push_back(cur);
+  return false;
 }
+
+static bool IsBoolFlag(const char* arg, const char* flag) {
+  return strcmp(arg, flag) == 0;
+}
+
+}  // namespace
 
 Subcommand ParseArgs(int argc, char* argv[],
-                     ParseOptions* parse_opts,
-                     QueryOptions* query_opts,
-                     ListRunsOptions* list_opts,
+                     ParseOptions* po,
+                     QueryOptions* qo,
+                     ListRunsOptions* lo,
                      std::string* error_msg) {
-  if (argc < 2) return Subcommand::kNone;
-  const char* cmd = argv[1];
-  if (std::strcmp(cmd, "parse") == 0) {
-    if (!parse_opts) return Subcommand::kNone;
-    *parse_opts = ParseOptions();
-    for (int i = 2; i < argc; ) {
-      if (ConsumeArg(&i, argc, argv, "--project", &parse_opts->project_root)) continue;
-      if (ConsumeArg(&i, argc, argv, "--compile-commands", &parse_opts->compile_commands_path)) continue;
-      if (ConsumeArg(&i, argc, argv, "--output-db", &parse_opts->output_db)) continue;
-      std::string parallel_str;
-      if (ConsumeArg(&i, argc, argv, "--parallel", &parallel_str)) {
-        parse_opts->parallel = static_cast<unsigned>(std::atoi(parallel_str.c_str()));
-        continue;
-      }
-      if (ConsumeArg(&i, argc, argv, "--jobs", &parallel_str)) {
-        parse_opts->parallel = static_cast<unsigned>(std::atoi(parallel_str.c_str()));
-        continue;
-      }
-      if (ConsumeArg(&i, argc, argv, "--priority-dirs", &parallel_str)) {
-        SplitComma(parallel_str, &parse_opts->priority_dirs);
-        continue;
-      }
-      if (i < argc && std::strcmp(argv[i], "--lazy") == 0) {
-        parse_opts->lazy = true;
-        i++;
-        continue;
-      }
-      if (i < argc && std::strcmp(argv[i], "--incremental") == 0) {
-        parse_opts->incremental = true;
-        i++;
-        continue;
-      }
-      if (i < argc && std::strcmp(argv[i], "--verbose") == 0) {
-        parse_opts->verbose = true;
-        i++;
-        continue;
-      }
-      i++;
-    }
-    if (parse_opts->project_root.empty() && error_msg) *error_msg = "missing --project";
-    return parse_opts->project_root.empty() ? Subcommand::kNone : Subcommand::kParse;
+  if (argc < 2) { *error_msg = "No command given"; return Subcommand::kNone; }
+
+  std::string cmd = argv[1];
+  Subcommand sub;
+  if      (cmd == "parse")     sub = Subcommand::kParse;
+  else if (cmd == "query")     sub = Subcommand::kQuery;
+  else if (cmd == "list-runs") sub = Subcommand::kListRuns;
+  else {
+    *error_msg = "Unknown command: " + cmd;
+    return Subcommand::kNone;
   }
-  if (std::strcmp(cmd, "query") == 0) {
-    if (!query_opts) return Subcommand::kNone;
-    *query_opts = QueryOptions();
-    for (int i = 2; i < argc; ) {
-      std::string s;
-      if (ConsumeArg(&i, argc, argv, "--db", &query_opts->db_path)) continue;
-      if (ConsumeArg(&i, argc, argv, "--project", &query_opts->project_root)) continue;
-      if (ConsumeArg(&i, argc, argv, "--type", &query_opts->query_type)) continue;
-      if (ConsumeArg(&i, argc, argv, "--symbol", &query_opts->symbol)) continue;
-      if (ConsumeArg(&i, argc, argv, "--file", &query_opts->file_path)) continue;
-      if (ConsumeArg(&i, argc, argv, "--line", &s)) {
-        query_opts->line = std::atoi(s.c_str());
-        continue;
+
+  std::string val;
+  for (int i = 2; i < argc; ++i) {
+    if (sub == Subcommand::kParse) {
+      if      (GetFlagValue(argc, argv, i, "--project",          val)) po->project_root = val;
+      else if (GetFlagValue(argc, argv, i, "--compile-commands", val)) po->compile_commands_path = val;
+      else if (GetFlagValue(argc, argv, i, "--output-db",        val)) po->db_path = val;
+      else if (GetFlagValue(argc, argv, i, "--parallel",         val) ||
+               GetFlagValue(argc, argv, i, "--jobs",             val)) {
+        int n = std::atoi(val.c_str());
+        if (n > 0) po->parallel = static_cast<unsigned>(n);
       }
-      if (ConsumeArg(&i, argc, argv, "--column", &s)) {
-        query_opts->column = std::atoi(s.c_str());
-        continue;
-      }
-      if (ConsumeArg(&i, argc, argv, "--depth", &s)) {
-        query_opts->depth = std::atoi(s.c_str());
-        if (query_opts->depth <= 0) query_opts->depth = 3;
-        continue;
-      }
-      if (i < argc && std::strcmp(argv[i], "--lazy") == 0) {
-        query_opts->lazy = true;
-        i++;
-        continue;
-      }
-      if (ConsumeArg(&i, argc, argv, "--parallel", &s)) {
-        query_opts->parallel = static_cast<unsigned>(std::atoi(s.c_str()));
-        continue;
-      }
-      if (ConsumeArg(&i, argc, argv, "--jobs", &s)) {
-        query_opts->parallel = static_cast<unsigned>(std::atoi(s.c_str()));
-        continue;
-      }
-      if (ConsumeArg(&i, argc, argv, "--priority-dirs", &s)) {
-        SplitComma(s, &query_opts->priority_dirs);
-        continue;
-      }
-      if (i < argc && std::strcmp(argv[i], "--verbose") == 0) {
-        query_opts->verbose = true;
-        i++;
-        continue;
-      }
-      i++;
+      else if (IsBoolFlag(argv[i], "--lazy"))        po->lazy = true;
+      else if (IsBoolFlag(argv[i], "--incremental")) po->incremental = true;
+      else if (IsBoolFlag(argv[i], "--verbose"))     po->verbose = true;
+      else if (GetFlagValue(argc, argv, i, "--priority-dirs", val))
+        po->priority_dirs = SplitComma(val);
     }
-    if (query_opts->db_path.empty()) {
-      if (error_msg) *error_msg = "query requires --db";
+    else if (sub == Subcommand::kQuery) {
+      if      (GetFlagValue(argc, argv, i, "--db",         val)) qo->db_path = val;
+      else if (GetFlagValue(argc, argv, i, "--project",    val)) qo->project_root = val;
+      else if (GetFlagValue(argc, argv, i, "--type",       val)) qo->query_type = val;
+      else if (GetFlagValue(argc, argv, i, "--symbol",     val)) qo->symbol = val;
+      else if (GetFlagValue(argc, argv, i, "--file",       val)) qo->file_path = val;
+      else if (GetFlagValue(argc, argv, i, "--line",       val)) qo->line = std::atoi(val.c_str());
+      else if (GetFlagValue(argc, argv, i, "--column",     val)) qo->column = std::atoi(val.c_str());
+      else if (GetFlagValue(argc, argv, i, "--depth",      val)) qo->depth = std::atoi(val.c_str());
+      else if (GetFlagValue(argc, argv, i, "--direction",  val)) qo->direction = val;
+      else if (GetFlagValue(argc, argv, i, "--parallel",   val) ||
+               GetFlagValue(argc, argv, i, "--jobs",       val)) {
+        int n = std::atoi(val.c_str());
+        if (n > 0) qo->parallel = static_cast<unsigned>(n);
+      }
+      else if (IsBoolFlag(argv[i], "--lazy"))    qo->lazy = true;
+      else if (IsBoolFlag(argv[i], "--verbose")) qo->verbose = true;
+      else if (GetFlagValue(argc, argv, i, "--priority-dirs", val))
+        qo->priority_dirs = SplitComma(val);
+    }
+    else if (sub == Subcommand::kListRuns) {
+      if      (GetFlagValue(argc, argv, i, "--db",      val)) lo->db_path = val;
+      else if (GetFlagValue(argc, argv, i, "--project", val)) lo->project_root = val;
+      else if (GetFlagValue(argc, argv, i, "--limit",   val)) lo->limit = std::atoi(val.c_str());
+      else if (IsBoolFlag(argv[i], "--verbose"))               lo->verbose = true;
+    }
+  }
+
+  // Validate required args
+  if (sub == Subcommand::kParse && po->project_root.empty()) {
+    *error_msg = "parse: --project is required";
+    return Subcommand::kNone;
+  }
+  if (sub == Subcommand::kQuery) {
+    if (qo->db_path.empty()) {
+      *error_msg = "query: --db is required";
       return Subcommand::kNone;
     }
-    if (query_opts->query_type.empty() && !query_opts->file_path.empty() && query_opts->line > 0)
-      query_opts->query_type = "symbol_at";
-    if (query_opts->query_type.empty()) {
-      if (error_msg) *error_msg = "query requires --type or --file with --line (symbol_at)";
-      return Subcommand::kNone;
-    }
-    return Subcommand::kQuery;
-  }
-  if (std::strcmp(cmd, "list-runs") == 0) {
-    if (!list_opts) return Subcommand::kNone;
-    *list_opts = ListRunsOptions();
-    for (int i = 2; i < argc; ) {
-      std::string s;
-      if (ConsumeArg(&i, argc, argv, "--db", &list_opts->db_path)) continue;
-      if (ConsumeArg(&i, argc, argv, "--project", &list_opts->project_root)) continue;
-      if (ConsumeArg(&i, argc, argv, "--limit", &s)) {
-        list_opts->limit = std::atoi(s.c_str());
-        if (list_opts->limit <= 0) list_opts->limit = 100;
-        continue;
+    if (qo->query_type.empty()) {
+      if (!qo->file_path.empty() && qo->line > 0)
+        qo->query_type = "symbol_at";
+      else {
+        *error_msg = "query: --type is required";
+        return Subcommand::kNone;
       }
-      if (i < argc && std::strcmp(argv[i], "--verbose") == 0) {
-        list_opts->verbose = true;
-        i++;
-        continue;
-      }
-      i++;
     }
-    if (list_opts->db_path.empty() && error_msg) *error_msg = "list-runs requires --db";
-    return list_opts->db_path.empty() ? Subcommand::kNone : Subcommand::kListRuns;
+    if (qo->depth <= 0) qo->depth = 2;
   }
-  return Subcommand::kNone;
+  if (sub == Subcommand::kListRuns && lo->db_path.empty()) {
+    *error_msg = "list-runs: --db is required";
+    return Subcommand::kNone;
+  }
+
+  return sub;
 }
 
 }  // namespace codexray

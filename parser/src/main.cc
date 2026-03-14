@@ -50,7 +50,7 @@ void PrintUsage(const char* prog) {
       << "  --db <path>   Database path\n"
       << "  --project <path>  Project root (optional, for lazy parse)\n"
       << "  --type <call_graph|class_graph|data_flow|control_flow|symbol_at>\n"
-      << "  --symbol <name_or_usr>  [--file <path>] [--depth N]\n"
+      << "  --symbol <name_or_usr>  [--file <path>] [--depth N] [--direction both|callers|callees]\n"
       << "  --file <path> --line <n> [--column <n>]  resolve symbol at location\n\n"
       << "List-runs:\n"
       << "  --db <path> [--project <path>] [--limit N]\n\n"
@@ -315,7 +315,8 @@ int main(int argc, char* argv[]) {
     }
     else if (query_opts.query_type == "call_graph")
       json = codexray::QueryCallGraphJson(
-          conn.Get(), query_opts.symbol, query_opts.file_path, query_opts.depth);
+          conn.Get(), query_opts.symbol, query_opts.file_path,
+          query_opts.depth, query_opts.direction);
     else if (query_opts.query_type == "class_graph")
       json = codexray::QueryClassGraphJson(
           conn.Get(), query_opts.symbol, query_opts.file_path);

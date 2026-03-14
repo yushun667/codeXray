@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { createLogger } from '../logger';
 import type { QueryType, GraphData } from '../types';
@@ -70,7 +71,7 @@ export class VisualizationProvider {
     );
     this._setGraphHtml(this._panel.webview);
     this._panel.reveal();
-    this._panel.webview.onDidReceiveMessage((msg: { action: string; file?: string; uri?: string; line?: number; column?: number; graphType?: string; nodeId?: string; symbol?: string }) => {
+    this._panel.webview.onDidReceiveMessage((msg: { action: string; file?: string; uri?: string; line?: number; column?: number; graphType?: string; nodeId?: string; symbol?: string; report?: unknown; queryDepth?: number }) => {
       if (!this._deps) return;
       if (msg.action === 'graphReady') {
         const pending = this._pendingInit;
@@ -91,18 +92,25 @@ export class VisualizationProvider {
           this._deps.gotoSymbolExecute(uri, line, column).catch((e) => log.warn('gotoSymbol 失败', e));
         }
       }
+      if (msg.action === 'perfReport' && msg.report) {
+        this._writePerfLog(msg.report);
+        return;
+      }
       if (msg.action === 'queryPredecessors' || msg.action === 'querySuccessors') {
         const graphType = (msg.graphType as QueryType) ?? this._currentType;
         const symbol = msg.symbol ?? '';
         const file = msg.file ?? '';
+        const queryDepth = typeof msg.queryDepth === 'number' ? msg.queryDepth : undefined;
+        const direction = msg.action === 'queryPredecessors' ? 'callers' as const : 'callees' as const;
         this._deps.parserService
-          .query(graphType, { symbol, file })
+          .query(graphType, { symbol, file, direction, ...(queryDepth !== undefined ? { depth: queryDepth } : {}) })
           .then((appendData) => {
-            if (this._panel?.webview && (appendData.nodes?.length || appendData.edges?.length)) {
+            const filtered = this._filterToWorkspace(appendData);
+            if (this._panel?.webview && (filtered.nodes?.length || filtered.edges?.length)) {
               this._panel.webview.postMessage({
                 action: 'graphAppend',
-                nodes: appendData.nodes ?? [],
-                edges: appendData.edges ?? [],
+                nodes: filtered.nodes ?? [],
+                edges: filtered.edges ?? [],
               });
             }
           })
@@ -130,6 +138,33 @@ export class VisualizationProvider {
     });
   }
 
+  private _writePerfLog(report: unknown): void {
+    try {
+      const r = report as {
+        trigger: string; nodeCount: number; edgeCount: number;
+        phases: { computeLayout: number; resolveCollisions: number; buildG6Data: number; setData: number; render: number; fitView: number; total: number };
+      };
+      const date = new Date().toISOString().slice(0, 10);
+      const logFile = path.join(os.tmpdir(), `codexray-perf-${date}.log`);
+      const ts = new Date().toISOString();
+      const line = [
+        `[${ts}] trigger=${r.trigger} nodes=${r.nodeCount} edges=${r.edgeCount}`,
+        `  computeLayout     ${r.phases.computeLayout} ms`,
+        `  resolveCollisions ${r.phases.resolveCollisions} ms`,
+        `  buildG6Data       ${r.phases.buildG6Data} ms`,
+        `  setData           ${r.phases.setData} ms`,
+        `  render            ${r.phases.render} ms`,
+        `  fitView           ${r.phases.fitView} ms`,
+        `  ── total          ${r.phases.total} ms`,
+        '',
+      ].join('\n');
+      fs.appendFileSync(logFile, line, 'utf8');
+      log.info('perf', `total=${r.phases.total}ms render=${r.phases.render}ms fitView=${r.phases.fitView}ms nodes=${r.nodeCount} → ${logFile}`);
+    } catch (e) {
+      log.warn('perfLog write failed', e instanceof Error ? e.message : String(e));
+    }
+  }
+
   private _titleForType(type: QueryType): string {
     const t: Record<QueryType, string> = {
       call_graph: '调用链图',
@@ -142,8 +177,9 @@ export class VisualizationProvider {
 
   private _postInitGraph(type: QueryType, data: GraphData, querySymbol?: string, queryFile?: string): void {
     if (!this._panel?.webview) return;
-    const nodes = data.nodes ?? [];
-    const edges = data.edges ?? [];
+    const filtered = this._filterToWorkspace(data);
+    const nodes = filtered.nodes ?? [];
+    const edges = filtered.edges ?? [];
     log.info('postMessage initGraph', { graphType: type, nodes: nodes.length, edges: edges.length });
     this._panel.webview.postMessage({
       action: 'initGraph',
@@ -153,6 +189,43 @@ export class VisualizationProvider {
       nodes,
       edges,
     });
+  }
+
+  /**
+   * 过滤掉工作区目录以外的符号节点及其关联边。
+   * 节点文件路径来自 node.definition.file 或 node.file；
+   * 相对路径会基于工作区根目录解析为绝对路径再判断。
+   */
+  private _filterToWorkspace(data: GraphData): GraphData {
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!wsRoot) return data;  // 无工作区则不过滤
+
+    const normalizedRoot = path.normalize(wsRoot) + path.sep;
+
+    const allNodes = data.nodes ?? [];
+    const allEdges = data.edges ?? [];
+
+    const keptNodes = allNodes.filter((n) => {
+      const filePath = n.definition?.file ?? n.file;
+      if (!filePath) return true;  // 无文件信息的节点保留（保守策略）
+      const abs = path.isAbsolute(filePath) ? filePath : path.resolve(wsRoot, filePath);
+      const norm = path.normalize(abs);
+      return norm.startsWith(normalizedRoot) || norm === path.normalize(wsRoot);
+    });
+
+    if (keptNodes.length === allNodes.length) return data;  // 无需过滤
+
+    const keptIds = new Set(keptNodes.map((n) => n.id));
+    const keptEdges = allEdges.filter((e) => {
+      const src = e.caller ?? (e as Record<string, unknown>).source as string ?? '';
+      const tgt = e.callee ?? (e as Record<string, unknown>).target as string ?? '';
+      return keptIds.has(src) && keptIds.has(tgt);
+    });
+
+    const removed = allNodes.length - keptNodes.length;
+    log.info('过滤工作区外符号', { total: allNodes.length, kept: keptNodes.length, removed, removedEdges: allEdges.length - keptEdges.length });
+
+    return { ...data, nodes: keptNodes, edges: keptEdges };
   }
 
   private _setGraphHtml(webview: vscode.Webview): void {
@@ -168,7 +241,8 @@ export class VisualizationProvider {
           const uri = webview.asWebviewUri(full);
           return `${attr}="${uri}"`;
         });
-        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; font-src ${webview.cspSource}; connect-src ${webview.cspSource};`;
+        // G6 v5 uses a Web Worker loaded via blob: URL; worker-src and script-src need blob:
+        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval' blob:; worker-src blob:; font-src ${webview.cspSource} data:; connect-src ${webview.cspSource} blob:; img-src ${webview.cspSource} data: blob:;`;
         if (!html.includes('Content-Security-Policy')) {
           html = html.replace('<head>', `<head>\n  <meta http-equiv="Content-Security-Policy" content="${csp}">`);
         }

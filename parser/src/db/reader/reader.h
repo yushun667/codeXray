@@ -125,9 +125,16 @@ struct CallGraphResult {
   std::vector<QueryEdge> edges;
 };
 
-// BFS from symbol (USR or name) up to depth; direction=both, forward, backward
+/// 查询方向
+enum class CallDirection { kBoth, kForward, kBackward };
+
+// BFS from symbol (USR or name) up to depth with direction-aware recursion.
+// kBoth: root level queries both callers & callees; subsequent levels
+//   continue only in the direction each node was discovered from.
+// kForward/kBackward: only query callees/callers at every level.
 CallGraphResult QueryCallGraph(sqlite3* db, const std::string& symbol_usr_or_name,
-                               const std::string& file_path, int depth = 3);
+                               const std::string& file_path, int depth = 2,
+                               CallDirection direction = CallDirection::kBoth);
 
 // ─── class graph ──────────────────────────────────────────────────────────────
 

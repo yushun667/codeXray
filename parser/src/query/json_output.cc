@@ -61,8 +61,12 @@ static std::string EdgeJson(const QueryEdge& e) {
 }  // namespace
 
 std::string QueryCallGraphJson(sqlite3* db, const std::string& symbol,
-                                const std::string& file_path, int depth) {
-  auto res = QueryCallGraph(db, symbol, file_path, depth);
+                                const std::string& file_path, int depth,
+                                const std::string& direction) {
+  CallDirection dir = CallDirection::kBoth;
+  if (direction == "callers")  dir = CallDirection::kBackward;
+  if (direction == "callees")  dir = CallDirection::kForward;
+  auto res = QueryCallGraph(db, symbol, file_path, depth, dir);
   std::ostringstream o;
   o << "{\"nodes\":[";
   bool first = true;
