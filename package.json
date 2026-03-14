@@ -200,8 +200,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run build:ui && npm run compile",
-    "build:ui": "cd resources/ui && npm run build",
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts"
