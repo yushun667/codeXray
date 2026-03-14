@@ -202,13 +202,25 @@ export async function clearHighlight(renderer: GraphRenderer): Promise<void> {
   const graph = renderer.getGraph();
   if (!graph) return;
 
-  const states: Record<string, string[]> = {};
-  for (const n of graph.getNodeData()) (states as any)[n.id] = [];
-  for (const e of graph.getEdgeData()) (states as any)[e.id!] = [];
+  const nodeStates: Record<string, string[]> = {};
+  for (const n of graph.getNodeData()) {
+    nodeStates[String(n.id)] = [];
+  }
+
+  const edgeStates: Record<string, string[]> = {};
+  for (const e of graph.getEdgeData()) {
+    if (e.id != null) edgeStates[String(e.id)] = [];
+  }
 
   try {
-    await graph.setElementState(states);
+    await graph.setElementState(nodeStates);
   } catch (err) {
-    console.warn('[path-highlight] clearHighlight failed:', err);
+    console.warn('[path-highlight] clearHighlight (nodes) failed:', err);
+  }
+
+  try {
+    await graph.setElementState(edgeStates);
+  } catch (err) {
+    console.warn('[path-highlight] clearHighlight (edges) failed:', err);
   }
 }
