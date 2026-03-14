@@ -49,22 +49,24 @@
 | 输入框 | textarea | 多行（rows=3），placeholder「输入消息…」，Enter 发送、Shift+Enter 换行 |
 | 按钮「发送」 | 按钮 | Codicon `send`，发送当前输入内容 |
 
-#### 编辑区 · 图视图（GraphPage + GraphCore）
+#### 编辑区 · 图视图（GraphPage + G6Graph）
 
 | 元素 | 所在组件 | 类型 | 说明 |
 |------|----------|------|------|
 | 加载中占位 | GraphPage | 整页文案 | 未 ready 时显示「加载图中…」 |
 | 空结果占位 | GraphPage | 整页文案 | 无节点时显示「查询结果为空。请先解析工程，或在 C/C++ 文件中选中符号后右键「查看调用链」等。」 |
 | 边数截断提示条 | GraphPage | 顶部横幅 | 边数超过 2500 时显示「边数量较多，已按节点对去重并仅展示前 2500 条（原始约 N 条），以保持流畅。」 |
-| 画布 | GraphCore | ReactFlow 容器 | 节点、边、缩放平移、框选、拖拽；背景网格（Background） |
-| 缩放/适应控件 | GraphCore | Controls | React Flow 自带：缩放、适应视图等 |
-| 图节点 | GraphCore | 自定义节点 GraphNode | 左侧 Handle（target）、右侧 Handle（source）；框内多行显示 label，悬停 title 显示全文；点击节点 postMessage(gotoSymbol) 跳转代码 |
-| 边 | GraphCore | 边 | smoothstep 折线、圆角、箭头（ArrowClosed）；同 (source,target) 去重，总数上限 2500 |
-| 查询根节点高亮 | GraphCore | 节点样式 | 查询入口函数节点使用橙色底色（`rgb(193,125,55)`）区分，3 级回退匹配策略（querySymbol 精确 → label 首行 → 拓扑度数最高） |
-| 查询根节点居中布局 | graphLayout.ts | 布局算法 | 查询入口节点居中放置，调用者（callers）在左侧、被调用者（callees）在右侧；通过 BFS 计算有向层级（负层级=调用者侧，0=根，正层级=被调用者侧），用 dagre rank 约束强制分层 |
-| 节点碰撞检测 | graphLayout.ts + GraphCore | 布局算法 + 拖拽交互 | 初始布局由 dagre 的 nodesep/ranksep 保证无重叠；**拖拽时实时碰撞检测**：onNodeDrag 中调用 pushOverlapping() 检测被拖拽节点与其他节点的包围盒重叠，沿最小穿透方向推开（间距 20px） |
-| 撤销/恢复 | GraphCore | 键盘快捷键 | Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复；基于快照栈（`useGraphHistory`），最多保存 50 步历史；在删除节点、拖拽移动、graphAppend 追加前保存快照；initGraph 初始化时清空历史 |
-| 节点右键菜单 | GraphContextMenu | 浮层菜单 | 固定在鼠标位置；项「继续查询前置节点」「继续查询后置节点」 |
+| 画布 | G6Graph | AntV G6 Canvas 容器 | 节点、边、缩放平移、框选、拖拽 |
+| 图节点 | G6Graph | G6 rect 节点 | 宽 280、高度动态（≥60）；4 端口（上右下左），边自动选择最近端口；根节点橙色、普通蓝色；双击 postMessage(gotoSymbol) 跳转代码 |
+| 边 | G6Graph | G6 cubic-horizontal | 水平曲线 + 箭头；同 (source,target) 去重，总数上限 2500 |
+| 路径高亮 | G6Graph | 状态系统 | 单击节点：BFS 找从根节点到目标的最短路径，路径上节点/边设 highlight 状态（橙色描边），其余设 dimmed（半透明）；点击画布空白区域清除 |
+| 查询根节点高亮 | G6Graph | 节点样式 | 查询入口函数节点使用橙色底色（`rgb(193,125,55)`）区分，3 级回退匹配策略（querySymbol 精确 → label 首行 → 拓扑度数最高） |
+| 查询根节点居中布局 | g6Layout.ts | 自定义 G6 布局 | 查询入口节点居中放置，调用者（callers）在左侧、被调用者（callees）在右侧；通过 BFS 计算有向层级（负层级=调用者侧，0=根，正层级=被调用者侧），注入 dagre rank 约束强制分层 |
+| 撤销/恢复 | G6Graph | 键盘快捷键 | Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复；基于 G6 History 插件 |
+| 工具栏「适应画布」 | G6Graph | 浮动按钮 | 右下角，点击执行 fitView |
+| 工具栏「重新布局」 | G6Graph | 浮动按钮 | 右下角，点击重新执行布局并适应画布 |
+| 节点右键菜单 | GraphContextMenu | 浮层菜单 | 固定在鼠标位置；项「展开前置节点」「展开后置节点」「跳转到定义」「删除节点」 |
+| 框选右键菜单 | SelectionContextMenu | 浮层菜单 | 框选多个节点后右键弹出；项「删除选中的 N 个节点」 |
 
 #### 主仓库 · 状态栏（非 Webview）
 

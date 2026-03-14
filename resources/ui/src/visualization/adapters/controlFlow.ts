@@ -1,18 +1,18 @@
 /**
- * 控制流图：将解析引擎 control_flow 查询结果转为 React Flow nodes/edges
+ * 控制流图：将解析引擎 control_flow 查询结果转为通用 nodes/edges
  */
 
-import type { Node, Edge } from 'reactflow';
+import type { AdapterNode, AdapterEdge } from './types';
 import type { GraphData, GraphNode as ApiNode, GraphEdge as ApiEdge } from '../../shared/types';
 import type { FlowNodeData } from './callGraph';
 import { nodeLabel } from './callGraph';
 
 /**
- * control_flow 数据 -> React Flow nodes/edges（position 由 layout 后续计算）
+ * control_flow 数据 -> 通用 nodes/edges（position 由布局引擎后续计算）
  */
-export function adaptControlFlow(data: GraphData): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
-  const nodes: Node<FlowNodeData>[] = [];
-  const edges: Edge[] = [];
+export function adaptControlFlow(data: GraphData): { nodes: AdapterNode<FlowNodeData>[]; edges: AdapterEdge[] } {
+  const nodes: AdapterNode<FlowNodeData>[] = [];
+  const edges: AdapterEdge[] = [];
   const apiNodes = data.nodes ?? [];
   const apiEdges = data.edges ?? [];
 

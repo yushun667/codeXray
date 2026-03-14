@@ -9,15 +9,14 @@
     "copy-codicons": "node scripts/copy-codicons.cjs"
   },
   "dependencies": {
-    "dagre": "^0.8.5",
+    "@antv/g6": "^5",
+    "@dagrejs/dagre": "^1.1.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",
-    "reactflow": "^11.10.0",
     "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
-    "@types/dagre": "^0.7.54",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.0",

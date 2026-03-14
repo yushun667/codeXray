@@ -1,8 +1,8 @@
 /**
- * 调用链图：将解析引擎 call_graph 查询结果转为 React Flow nodes/edges
+ * 调用链图：将解析引擎 call_graph 查询结果转为通用 nodes/edges
  */
 
-import type { Node, Edge } from 'reactflow';
+import type { AdapterNode, AdapterEdge } from './types';
 import type { GraphData, GraphNode as ApiNode, GraphEdge as ApiEdge } from '../../shared/types';
 
 export interface FlowNodeData {
@@ -27,11 +27,11 @@ export function nodeLabel(n: ApiNode): string {
 }
 
 /**
- * call_graph 数据 -> React Flow nodes/edges（position 由 layout 后续计算）
+ * call_graph 数据 -> 通用 nodes/edges（position 由布局引擎后续计算）
  */
-export function adaptCallGraph(data: GraphData): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
-  const nodes: Node<FlowNodeData>[] = [];
-  const edges: Edge[] = [];
+export function adaptCallGraph(data: GraphData): { nodes: AdapterNode<FlowNodeData>[]; edges: AdapterEdge[] } {
+  const nodes: AdapterNode<FlowNodeData>[] = [];
+  const edges: AdapterEdge[] = [];
   const apiNodes = data.nodes ?? [];
   const apiEdges = data.edges ?? [];
 

@@ -109,18 +109,19 @@
 | 空结果占位 | 整页文案 | 无节点时：「查询结果为空。请先解析工程，或在 C/C++ 文件中选中符号后右键「查看调用链」等。」 |
 | 边数截断提示条 | 顶部横幅 | 边数 > 2500 时：「边数量较多，已按节点对去重并仅展示前 2500 条（原始约 N 条），以保持流畅。」 |
 
-### 3.2 图核心画布（GraphCore.tsx）
+### 3.2 图核心画布（G6Graph.tsx）
 
 | 元素 | 类型 | 说明 |
 |------|------|------|
-| 画布 | ReactFlow 容器 | 节点、边、拖拽、框选、缩放、平移 |
-| 背景 | Background | 网格背景 |
-| 缩放/适应控件 | Controls | React Flow 自带：缩放、适应视图等 |
-| 图节点 | GraphNode | 自定义节点：左/右 Handle；框内多行 label；title 悬停全文；双击 postMessage(gotoSymbol) 跳转代码 |
-| 边 | Edge | smoothstep、圆角；按 (source,target) 去重，总数上限 2500 |
-| 框选删除 | 交互 | 左键拖拽框选节点，按 Delete/Backspace 批量删除选中节点及其关联边 |
-| 撤销 | 键盘快捷键 | Ctrl/Cmd+Z 撤销上一步操作（删除节点、拖拽移动、graphAppend 追加等），基于快照栈，最多 50 步 |
-| 恢复 | 键盘快捷键 | Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复被撤销的操作；执行新操作后 redo 栈清空 |
+| 画布 | AntV G6 Canvas | 节点、边、拖拽、框选、缩放、平移 |
+| 图节点 | G6 rect 节点 | 宽 280、高度动态（≥60）；4 端口（上右下左）；根节点橙色、普通蓝色；双击 postMessage(gotoSymbol) 跳转代码 |
+| 边 | G6 cubic-horizontal | 水平曲线 + 箭头；按 (source,target) 去重，总数上限 2500 |
+| 路径高亮 | 状态系统 | 单击节点：BFS 找根→目标最短路径，路径高亮、其余暗化；点击画布清除 |
+| 框选 | brush-select 行为 | Shift+左键拖拽框选节点 |
+| 撤销 | 键盘快捷键 | Ctrl/Cmd+Z 撤销（G6 History 插件） |
+| 恢复 | 键盘快捷键 | Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复 |
+| 工具栏「适应画布」 | 浮动按钮 | 右下角，点击执行 fitView |
+| 工具栏「重新布局」 | 浮动按钮 | 右下角，点击重新执行布局并适应画布 |
 
 ### 3.3 节点右键菜单（GraphContextMenu.tsx）
 

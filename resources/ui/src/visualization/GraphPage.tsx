@@ -1,156 +1,134 @@
 /**
- * 图页入口：接收 type + initialData，选 adapter 转 nodes/edges，交给 GraphCore；
- * 接收 graphAppend 时 merge + layout 后更新。与主仓库通过 postMessage 通信。
- *
- * 撤销/恢复：基于快照栈，Ctrl/Cmd+Z 撤销，Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复。
- * 快照在以下 4 个变更点保存：graphAppend、deleteNodes、键盘删除、节点拖拽。
- * initGraph 初始化时清空历史栈（不可撤销初始化）。
+ * 图页入口：接收 host 的 initGraph / graphAppend 消息，
+ * 通过 G6Graph ref 控制图实例；管理右键菜单状态。
  *
  * 占位状态：
  * - !ready → 「加载图中…」
- * - ready && nodes.length === 0 → 「查询结果为空。…」
+ * - ready && nodeCount === 0 → 「查询结果为空。…」
  * - edges 超过 MAX_EDGES → 顶部提示横幅
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { Node, Edge } from 'reactflow';
+import type { NodeData, EdgeData } from '@antv/g6';
 import type { GraphType, GraphData } from '../shared/types';
 import type { HostToGraphMessage } from '../shared/protocol';
-import { getLayoutedElements } from './graphLayout';
-import { mergeGraph } from './graphMerge';
-import type { Node as RFNode } from 'reactflow';
-import { GraphCore } from './GraphCore';
-import { GraphContextMenu, SelectionContextMenu } from './GraphContextMenu';
+import type { FlowNodeData } from './adapters/callGraph';
+import type { AdapterNode, AdapterEdge } from './adapters/types';
 import { adaptCallGraph } from './adapters/callGraph';
 import { adaptClassGraph } from './adapters/classGraph';
 import { adaptDataFlow } from './adapters/dataFlow';
 import { adaptControlFlow } from './adapters/controlFlow';
-import type { FlowNodeData } from './adapters/callGraph';
+import { toG6Data, deduplicateAndLimitEdges } from './g6Adapter';
+import { G6Graph, type G6GraphHandle } from './G6Graph';
+import { GraphContextMenu, SelectionContextMenu } from './GraphContextMenu';
 import { getVscodeApi } from '../shared/vscodeApi';
-import { useGraphHistory } from './useGraphHistory';
-import type { GraphSnapshot } from './useGraphHistory';
 
-/** 同 (source,target) 仅保留一条边，总数上限避免卡顿 */
+/** 同 (source,target) 边的总数上限 */
 const MAX_EDGES = 2500;
 
-function deduplicateAndLimitEdges(edges: Edge[]): { edges: Edge[]; originalCount: number } {
-  const originalCount = edges.length;
-  const seen = new Set<string>();
-  const out: Edge[] = [];
-  for (const e of edges) {
-    const key = `${e.source}\t${e.target}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(e);
-    if (out.length >= MAX_EDGES) break;
-  }
-  return { edges: out, originalCount };
-}
-
+/**
+ * 根据图类型选择对应 adapter 转换数据
+ * @param graphType 图类型
+ * @param data 原始 API 数据
+ * @returns adapter 输出的通用节点/边
+ */
 function adaptGraph(
   graphType: GraphType,
   data: GraphData
-): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
+): { nodes: AdapterNode<FlowNodeData>[]; edges: AdapterEdge[] } {
   switch (graphType) {
-    case 'call_graph':   return adaptCallGraph(data);
-    case 'class_graph':  return adaptClassGraph(data);
-    case 'data_flow':    return adaptDataFlow(data);
-    case 'control_flow': return adaptControlFlow(data);
-    default:             return { nodes: [], edges: [] };
+    case 'call_graph':
+      return adaptCallGraph(data);
+    case 'class_graph':
+      return adaptClassGraph(data);
+    case 'data_flow':
+      return adaptDataFlow(data);
+    case 'control_flow':
+      return adaptControlFlow(data);
+    default:
+      return { nodes: [], edges: [] };
   }
 }
 
 /**
- * 删除指定节点后清理孤立节点：
- * 1. 移除 removeIds 中的节点及其关联边
- * 2. 在剩余节点/边上做连通分量分析（无向图 BFS）
- * 3. 保留包含 rootNodeIds 中任一节点的连通分量，移除其他孤立分量
+ * 识别查询入口节点（根节点）。
+ * 策略：1) querySymbol name 精确匹配  2) label 首行匹配  3) 拓扑分析（度数最高）
  *
- * @param nodes 当前所有节点
- * @param edges 当前所有边
- * @param removeIds 要删除的节点 ID 集合
- * @param rootNodeIds 查询根节点 ID 集合（不可被孤立清理删除）
+ * @param nodes adapter 输出的节点
+ * @param edges adapter 输出的边
+ * @param querySymbol 查询入口符号名
+ * @returns 查询根节点 ID 集合
  */
-function removeNodesAndOrphans(
-  nodes: Node<FlowNodeData>[],
-  edges: Edge[],
-  removeIds: Set<string>,
-  rootNodeIds: Set<string>
-): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
-  // Step 1: 移除指定节点和关联边
-  const remainingNodes = nodes.filter((n) => !removeIds.has(n.id));
-  const remainingEdges = edges.filter(
-    (e) => !removeIds.has(e.source) && !removeIds.has(e.target)
-  );
+function identifyRootNodes(
+  nodes: AdapterNode<FlowNodeData>[],
+  edges: AdapterEdge[],
+  querySymbol?: string
+): Set<string> {
+  const rootIds = new Set<string>();
+  let found = false;
 
-  if (remainingNodes.length === 0) return { nodes: [], edges: [] };
-
-  // Step 2: 构建无向邻接表
-  const adj = new Map<string, Set<string>>();
-  for (const n of remainingNodes) adj.set(n.id, new Set());
-  for (const e of remainingEdges) {
-    adj.get(e.source)?.add(e.target);
-    adj.get(e.target)?.add(e.source);
-  }
-
-  // Step 3: BFS 找所有连通分量
-  const visited = new Set<string>();
-  const components: Set<string>[] = [];
-  for (const n of remainingNodes) {
-    if (visited.has(n.id)) continue;
-    const comp = new Set<string>();
-    const queue = [n.id];
-    visited.add(n.id);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      comp.add(cur);
-      for (const nb of adj.get(cur) ?? []) {
-        if (!visited.has(nb)) {
-          visited.add(nb);
-          queue.push(nb);
-        }
-      }
-    }
-    components.push(comp);
-  }
-
-  // Step 4: 保留包含任一 root 节点的分量；若无 root 则保留最大分量
-  const keepIds = new Set<string>();
-  let hasRootComp = false;
-  for (const comp of components) {
-    for (const rid of rootNodeIds) {
-      if (comp.has(rid)) {
-        for (const id of comp) keepIds.add(id);
-        hasRootComp = true;
+  // 策略 1：name 精确匹配
+  if (querySymbol) {
+    for (const nd of nodes) {
+      if (nd.data.name === querySymbol) {
+        rootIds.add(nd.id);
+        nd.data.isRoot = true;
+        found = true;
         break;
       }
     }
-  }
-  if (!hasRootComp) {
-    // 回退：保留最大连通分量
-    let largest = components[0];
-    for (const comp of components) {
-      if (comp.size > largest.size) largest = comp;
+
+    // 策略 2：label 首行匹配
+    if (!found) {
+      for (const nd of nodes) {
+        const firstLine = nd.data.label.split('\n')[0] ?? '';
+        if (
+          firstLine === querySymbol ||
+          firstLine.endsWith('::' + querySymbol)
+        ) {
+          rootIds.add(nd.id);
+          nd.data.isRoot = true;
+          found = true;
+          break;
+        }
+      }
     }
-    for (const id of largest) keepIds.add(id);
   }
 
-  return {
-    nodes: remainingNodes.filter((n) => keepIds.has(n.id)),
-    edges: remainingEdges.filter(
-      (e) => keepIds.has(e.source) && keepIds.has(e.target)
-    ),
-  };
+  // 策略 3：度数最高的节点
+  if (!found && nodes.length > 0 && edges.length > 0) {
+    const degree = new Map<string, number>();
+    for (const nd of nodes) degree.set(nd.id, 0);
+    for (const edge of edges) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+    }
+    let maxDeg = 0;
+    let maxId = nodes[0].id;
+    for (const [id, deg] of degree) {
+      if (deg > maxDeg) {
+        maxDeg = deg;
+        maxId = id;
+      }
+    }
+    rootIds.add(maxId);
+    const rootNd = nodes.find((nd) => nd.id === maxId);
+    if (rootNd) rootNd.data.isRoot = true;
+  }
+
+  return rootIds;
 }
 
 export function GraphPage() {
   const [graphType, setGraphType] = useState<GraphType>('call_graph');
   const [ready, setReady] = useState(false);
-  const [nodes, setNodes] = useState<Node<FlowNodeData>[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
+  const [nodeCount, setNodeCount] = useState(0);
   const [edgesTruncated, setEdgesTruncated] = useState<number | null>(null);
+
+  // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{
-    node: RFNode<FlowNodeData>;
+    nodeId: string;
+    nodeData: FlowNodeData;
     x: number;
     y: number;
   } | null>(null);
@@ -160,74 +138,14 @@ export function GraphPage() {
     y: number;
   } | null>(null);
 
-  /** 查询根节点 ID 集合：首次 initGraph 时记录，用于孤立节点清理 */
-  const rootNodeIdsRef = useRef<Set<string>>(new Set());
-  /** 查询入口节点 ID 集合：用于布局时"根居中"（仅查询入口，非全部初始节点） */
+  /** G6Graph 组件 ref */
+  const g6Ref = useRef<G6GraphHandle>(null);
+  /** 查询根节点 ID 集合 */
   const queryRootIdsRef = useRef<Set<string>>(new Set());
+  /** 当前图类型（ref 版本，避免 useEffect 闭包过时） */
+  const graphTypeRef = useRef<GraphType>('call_graph');
 
-  /** 撤销/恢复历史栈 */
-  const { pushSnapshot, undo, redo, clearHistory } = useGraphHistory();
-
-  /** 用 ref 追踪最新 nodes/edges，解决闭包中读取过时 state 的问题 */
-  const nodesRef = useRef(nodes);
-  const edgesRef = useRef(edges);
-  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
-  useEffect(() => { edgesRef.current = edges; }, [edges]);
-
-  /**
-   * 捕获当前图状态快照（用于 pushSnapshot）
-   * @returns 当前 nodes + edges + rootNodeIds 的快照
-   */
-  const captureSnapshot = useCallback((): GraphSnapshot => ({
-    nodes: nodesRef.current,
-    edges: edgesRef.current,
-    rootNodeIds: new Set(rootNodeIdsRef.current),
-  }), []);
-
-  /**
-   * 撤销：恢复到上一个快照状态
-   */
-  const handleUndo = useCallback(() => {
-    const snap = undo(captureSnapshot());
-    if (snap) {
-      setNodes(snap.nodes);
-      setEdges(snap.edges);
-      rootNodeIdsRef.current = snap.rootNodeIds;
-    }
-  }, [undo, captureSnapshot]);
-
-  /**
-   * 恢复：恢复到下一个快照状态
-   */
-  const handleRedo = useCallback(() => {
-    const snap = redo(captureSnapshot());
-    if (snap) {
-      setNodes(snap.nodes);
-      setEdges(snap.edges);
-      rootNodeIdsRef.current = snap.rootNodeIds;
-    }
-  }, [redo, captureSnapshot]);
-
-  /**
-   * 统一的节点删除函数：删除指定节点 + 清理关联边 + 移除孤立节点
-   * 供右键单删、右键批量删、键盘删除三条路径共用
-   * 删除前保存快照以支持撤销
-   */
-  const deleteNodes = useCallback((idsToRemove: Set<string>) => {
-    pushSnapshot(captureSnapshot());
-    setNodes((curNodes) => {
-      setEdges((curEdges) => {
-        const result = removeNodesAndOrphans(
-          curNodes, curEdges, idsToRemove, rootNodeIdsRef.current
-        );
-        // 用 queueMicrotask 避免 setState 嵌套问题
-        queueMicrotask(() => setNodes(result.nodes));
-        return result.edges;
-      });
-      return curNodes; // 由 queueMicrotask 中的 setNodes 更新
-    });
-  }, [setNodes, setEdges, pushSnapshot, captureSnapshot]);
-
+  // ─── 消息处理 ───
   useEffect(() => {
     // 非 VSCode 环境（开发调试）：直接标记 ready
     if (!getVscodeApi()) {
@@ -242,110 +160,56 @@ export function GraphPage() {
       if (m.action === 'initGraph') {
         const type = (m.graphType as GraphType) ?? 'call_graph';
         setGraphType(type);
-        clearHistory(); // 初始化时清空撤销/恢复历史
+        graphTypeRef.current = type;
+
         if (m.nodes?.length || m.edges?.length) {
-          // Phase 1: 适配数据（不含布局）
+          // 1. 适配数据
           const { nodes: rawN, edges: rawE } = adaptGraph(type, {
             nodes: m.nodes ?? [],
             edges: m.edges ?? [],
           });
 
-          // Phase 2: 识别查询入口节点（用于布局居中 + 高亮）
-          // 策略：1) querySymbol name 精确匹配  2) label 首行匹配  3) 拓扑分析（度数最高）
+          // 2. 识别根节点
           const qSym = (m as { querySymbol?: string }).querySymbol;
-          const queryRootIds = new Set<string>();
-          let rootFound = false;
-          if (qSym) {
-            for (const nd of rawN) {
-              const d = nd.data as FlowNodeData;
-              if (d.name === qSym) {
-                queryRootIds.add(nd.id);
-                d.isRoot = true;
-                rootFound = true;
-                break;
-              }
-            }
-            if (!rootFound) {
-              for (const nd of rawN) {
-                const d = nd.data as FlowNodeData;
-                const firstLine = d.label.split('\n')[0] ?? '';
-                if (firstLine === qSym || firstLine.endsWith('::' + qSym)) {
-                  queryRootIds.add(nd.id);
-                  d.isRoot = true;
-                  rootFound = true;
-                  break;
-                }
-              }
-            }
-          }
-          if (!rootFound && rawN.length > 0 && rawE.length > 0) {
-            const degree = new Map<string, number>();
-            for (const nd of rawN) degree.set(nd.id, 0);
-            for (const edge of rawE) {
-              degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
-              degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
-            }
-            let maxDeg = 0;
-            let maxId = rawN[0].id;
-            for (const [id, deg] of degree) {
-              if (deg > maxDeg) { maxDeg = deg; maxId = id; }
-            }
-            queryRootIds.add(maxId);
-            const rootNd = rawN.find((nd) => nd.id === maxId);
-            if (rootNd) (rootNd.data as FlowNodeData).isRoot = true;
-          }
+          const rootIds = identifyRootNodes(rawN, rawE, qSym);
+          queryRootIdsRef.current = rootIds;
 
-          // Phase 3: 去重/限流边 + 布局（传入查询根节点，使其居中）
-          const { edges: limitedE, originalCount } = deduplicateAndLimitEdges(rawE);
-          const edgesTrunc = originalCount > limitedE.length ? originalCount : undefined;
-          const n = rawN.length > 0
-            ? getLayoutedElements(rawN, limitedE, type, queryRootIds)
-            : rawN;
+          // 3. 转为 G6 格式
+          const g6Data = toG6Data(rawN, rawE);
 
-          // 记录初始节点 ID 作为查询根节点（首次设置；后续 graphAppend 不覆盖）
-          if (rootNodeIdsRef.current.size === 0) {
-            for (const nd of n) rootNodeIdsRef.current.add(nd.id);
-          }
-          // 保存查询入口节点 ID 供 graphAppend 重布局使用
-          queryRootIdsRef.current = queryRootIds;
+          // 4. 检查边截断
+          const { edges: limitedE, originalCount } =
+            deduplicateAndLimitEdges(g6Data.edges);
+          setEdgesTruncated(
+            originalCount > limitedE.length ? originalCount : null
+          );
 
-          setNodes(n);
-          setEdges(limitedE);
-          setEdgesTruncated(edgesTrunc ?? null);
+          // 5. 初始化图
+          g6Ref.current?.setData(
+            { nodes: g6Data.nodes, edges: limitedE },
+            rootIds
+          );
         }
         setReady(true);
       }
 
       if (m.action === 'graphAppend' && (m.nodes?.length || m.edges?.length)) {
-        pushSnapshot(captureSnapshot()); // 追加前保存快照以支持撤销
-        const appendData: GraphData = { nodes: m.nodes ?? [], edges: m.edges ?? [] };
-        setGraphType((curType) => {
-          const { nodes: appendN, edges: appendE } = adaptGraph(curType, appendData);
-          setNodes((curNodes) => {
-            setEdges((curEdges) => {
-              const { nodes: mergedN, edges: mergedE } = mergeGraph(
-                curNodes,
-                curEdges,
-                appendN,
-                appendE
-              );
-              const { edges: limitedE, originalCount } = deduplicateAndLimitEdges(mergedE);
-              if (originalCount > limitedE.length) setEdgesTruncated(originalCount);
-              const laid = getLayoutedElements(mergedN, limitedE, curType, queryRootIdsRef.current);
-              queueMicrotask(() => setNodes(laid));
-              return limitedE;
-            });
-            return curNodes;
-          });
-          return curType;
+        const curType = graphTypeRef.current;
+        const { nodes: appendN, edges: appendE } = adaptGraph(curType, {
+          nodes: m.nodes ?? [],
+          edges: m.edges ?? [],
         });
+
+        const g6AppendData = toG6Data(appendN, appendE);
+        g6Ref.current?.appendData(g6AppendData, queryRootIdsRef.current);
       }
     };
 
     window.addEventListener('message', handler);
 
     // 通知主仓库 Webview 已就绪，可发送 initGraph
-    const sendReady = () => getVscodeApi()?.postMessage({ action: 'graphReady' });
+    const sendReady = () =>
+      getVscodeApi()?.postMessage({ action: 'graphReady' });
     sendReady();
     const t1 = setTimeout(sendReady, 200);
     const t2 = setTimeout(sendReady, 600);
@@ -368,6 +232,12 @@ export function GraphPage() {
     return () => document.removeEventListener('mousedown', close);
   }, [contextMenu, selectionMenu]);
 
+  /** 节点数量变化回调 */
+  const handleNodeCountChange = useCallback((count: number) => {
+    setNodeCount(count);
+  }, []);
+
+  // ─── 渲染 ───
   if (!ready) {
     return (
       <div
@@ -384,7 +254,7 @@ export function GraphPage() {
     );
   }
 
-  if (nodes.length === 0) {
+  if (ready && nodeCount === 0) {
     return (
       <div
         style={{
@@ -424,64 +294,39 @@ export function GraphPage() {
             padding: '4px 10px',
             fontSize: 12,
             color: 'var(--vscode-descriptionForeground, #858585)',
-            background: 'var(--vscode-editor-inactiveSelectionBackground, #2a2a2a)',
+            background:
+              'var(--vscode-editor-inactiveSelectionBackground, #2a2a2a)',
           }}
         >
-          边数量较多，已按节点对去重并仅展示前 {MAX_EDGES} 条（原始约 {edgesTruncated} 条），以保持流畅。
+          边数量较多，已按节点对去重并仅展示前 {MAX_EDGES} 条（原始约{' '}
+          {edgesTruncated} 条），以保持流畅。
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0 }}>
-        <GraphCore
-          nodes={nodes}
-          edges={edges}
-          setNodes={setNodes}
-          setEdges={setEdges}
-          onNodeContextMenu={(node, ev) =>
-            setContextMenu({ node, x: ev.clientX, y: ev.clientY })
+        <G6Graph
+          ref={g6Ref}
+          onNodeContextMenu={(nodeId, nodeData, x, y) =>
+            setContextMenu({ nodeId, nodeData, x, y })
           }
-          onSelectionContextMenu={(selectedNodes, ev) => {
+          onSelectionContextMenu={(selectedNodeIds, x, y) => {
             setContextMenu(null);
-            setSelectionMenu({
-              selectedNodeIds: selectedNodes.map((n) => n.id),
-              x: ev.clientX,
-              y: ev.clientY,
-            });
+            setSelectionMenu({ selectedNodeIds, x, y });
           }}
-          onNodesDeleted={(removedIds) => {
-            // 键盘删除前保存快照以支持撤销
-            pushSnapshot(captureSnapshot());
-            // 键盘删除后，GraphCore 已移除节点和关联边，
-            // 这里只需做孤立节点清理（使用 requestAnimationFrame 等待状态更新后执行）
-            requestAnimationFrame(() => {
-              setNodes((curNodes) => {
-                setEdges((curEdges) => {
-                  const result = removeNodesAndOrphans(
-                    curNodes, curEdges, new Set(), rootNodeIdsRef.current
-                  );
-                  if (result.nodes.length < curNodes.length) {
-                    queueMicrotask(() => setNodes(result.nodes));
-                    return result.edges;
-                  }
-                  return curEdges;
-                });
-                return curNodes;
-              });
-            });
-          }}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          onBeforeDrag={() => pushSnapshot(captureSnapshot())}
+          onNodeCountChange={handleNodeCountChange}
         />
       </div>
       {contextMenu && (
         <GraphContextMenu
           graphType={graphType}
-          nodeId={contextMenu.node.id}
-          nodeData={contextMenu.node.data as FlowNodeData}
+          nodeId={contextMenu.nodeId}
+          nodeData={contextMenu.nodeData}
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
-          onDeleteNode={(nid) => deleteNodes(new Set([nid]))}
+          onDeleteNode={(nid) => {
+            g6Ref.current?.removeNode(nid);
+            setContextMenu(null);
+          }}
         />
       )}
       {selectionMenu && (
@@ -490,7 +335,10 @@ export function GraphPage() {
           x={selectionMenu.x}
           y={selectionMenu.y}
           onClose={() => setSelectionMenu(null)}
-          onDeleteSelected={(ids) => deleteNodes(new Set(ids))}
+          onDeleteSelected={(ids) => {
+            g6Ref.current?.removeNodes(ids);
+            setSelectionMenu(null);
+          }}
         />
       )}
     </div>
