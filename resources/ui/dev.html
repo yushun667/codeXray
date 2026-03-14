@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeXray · 独立测试</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1e1e1e; color: #d4d4d4;
+    }
+    #app { display: flex; flex-direction: column; width: 100%; height: 100%; position: relative; }
+    #graph-container { flex: 1; width: 100%; min-height: 0; position: relative; overflow: hidden; }
+    #graph-container canvas { display: block; }
+    #cx-loading { position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; background: rgba(0,0,0,0.4); z-index: 100;
+      color: #ccc; font-size: 14px; pointer-events: none; }
+    #cx-loading.hidden { display: none; }
+    #dev-panel { position: fixed; top: 8px; left: 8px; z-index: 200;
+      background: rgba(30,30,30,0.92); border: 1px solid #555; border-radius: 6px;
+      padding: 10px 14px; font-size: 12px; max-width: 320px; }
+    #dev-panel h3 { margin-bottom: 6px; color: #f0c040; font-size: 13px; }
+    #dev-panel p { margin: 3px 0; color: #aaa; line-height: 1.5; }
+    #dev-panel kbd { background: #333; border: 1px solid #555; border-radius: 3px;
+      padding: 1px 5px; font-size: 11px; color: #eee; }
+  </style>
+</head>
+<body class="vscode-dark">
+  <div id="app">
+    <div id="graph-container"></div>
+    <div id="cx-loading" class="hidden">正在渲染…</div>
+  </div>
+
+  <div id="dev-panel">
+    <h3>开发测试模式</h3>
+    <p>单击节点 → 路径高亮</p>
+    <p>单击空白 → 清除高亮</p>
+    <p>单击 badge(▶/▼) → 折叠/展开</p>
+    <p>右键节点 → 上下文菜单</p>
+    <p>右键拖拽 → 平移画布</p>
+    <p>滚轮 → 缩放</p>
+    <p style="margin-top:6px;color:#888;">打开浏览器 DevTools (F12) 查看日志</p>
+  </div>
+
+  <script type="module" src="./src/dev.ts"></script>
+</body>
+</html>
