@@ -213,7 +213,9 @@ private:
       r.def_col_end   = li.end_col;
       RecordRefFile(li.file);
     }
-    // 声明位置（遍历其他 redecl 取第一个有效位置）
+    // 声明位置：优先从其他 redecl 获取；若无其他 redecl 且当前不是定义，
+    // 则使用 fd 自身作为声明位置（处理仅有一个声明、无定义的外部函数）。
+    bool found_decl = false;
     for (auto* redecl : fd->redecls()) {
       if (redecl == fd) continue;
       auto li = GetLocInfo(sm_, redecl->getSourceRange());
@@ -224,7 +226,31 @@ private:
       r.decl_line_end  = li.end_line;
       r.decl_col_end   = li.end_col;
       RecordRefFile(li.file);
+      found_decl = true;
       break;
+    }
+    // 若未从其他 redecl 找到声明位置，且当前 fd 不是定义，则用 fd 自身
+    if (!found_decl && !fd->isThisDeclarationADefinition()) {
+      auto loc = fd->getSourceRange().getBegin();
+      if (loc.isValid()) {
+        clang::FullSourceLoc full(loc, sm_);
+        // 跳过 isInSystemHeader 判断：对声明位置，我们需要保留所有非编译器内置的位置
+        // 以便 UI 能够跳转到头文件中的声明
+        const char* fn = full.isValid() ? sm_.getPresumedLoc(full).getFilename() : nullptr;
+        if (fn) {
+          auto li = GetLocInfo(sm_, fd->getSourceRange());
+          // 即使 GetLocInfo 返回空文件（因 isInSystemHeader），也用原始路径
+          r.decl_file_path = li.file.empty() ? std::string(fn) : li.file;
+          r.decl_line      = li.line ? li.line : full.getSpellingLineNumber();
+          r.decl_column    = li.col ? li.col : full.getSpellingColumnNumber();
+          clang::FullSourceLoc end_loc(fd->getSourceRange().getEnd(), sm_);
+          r.decl_line_end  = li.end_line ? li.end_line
+                             : (end_loc.isValid() ? end_loc.getSpellingLineNumber() : r.decl_line);
+          r.decl_col_end   = li.end_col ? li.end_col
+                             : (end_loc.isValid() ? end_loc.getSpellingColumnNumber() : r.decl_column);
+          RecordRefFile(r.decl_file_path);
+        }
+      }
     }
     symbols_->push_back(r);
   }

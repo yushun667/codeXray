@@ -41,7 +41,12 @@ static const char* kSqlUpsertSymbol =
     "  def_line=COALESCE(NULLIF(excluded.def_line,0), def_line),"
     "  def_column=COALESCE(NULLIF(excluded.def_column,0), def_column),"
     "  def_line_end=COALESCE(NULLIF(excluded.def_line_end,0), def_line_end),"
-    "  def_col_end=COALESCE(NULLIF(excluded.def_col_end,0), def_col_end)";
+    "  def_col_end=COALESCE(NULLIF(excluded.def_col_end,0), def_col_end),"
+    "  decl_file_id=COALESCE(excluded.decl_file_id, decl_file_id),"
+    "  decl_line=COALESCE(NULLIF(excluded.decl_line,0), decl_line),"
+    "  decl_column=COALESCE(NULLIF(excluded.decl_column,0), decl_column),"
+    "  decl_line_end=COALESCE(NULLIF(excluded.decl_line_end,0), decl_line_end),"
+    "  decl_col_end=COALESCE(NULLIF(excluded.decl_col_end,0), decl_col_end)";
 static const char* kSqlSelectSymbol =
     "SELECT id FROM symbol WHERE usr=?";
 
