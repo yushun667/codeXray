@@ -114,29 +114,12 @@ export class GraphRenderer {
     this._queryDepth = queryDepth;
     this._nodeMap.clear();
     this._edgeSet.clear();
+    this._nodes = nodes;
+    this._edges = edges;
     this._collapsedChildren.clear();
     this._collapsedNodes.clear();
 
-    // 收集所有被边引用的节点 ID
-    const connectedIds = new Set<string>();
-    connectedIds.add(rootId);
-    for (const e of edges) {
-      const src = e.caller || e.source || '';
-      const tgt = e.callee || e.target || '';
-      connectedIds.add(src);
-      connectedIds.add(tgt);
-    }
-
-    // 过滤孤立节点（保留根节点和所有被边引用的节点）
-    const filtered = nodes.filter((n) => connectedIds.has(n.id));
-    if (filtered.length < nodes.length) {
-      console.log('[renderer] 过滤孤立节点:', nodes.length - filtered.length, '个');
-    }
-
-    this._nodes = filtered;
-    this._edges = edges;
-
-    for (const n of filtered) {
+    for (const n of nodes) {
       this._nodeMap.set(n.id, { raw: n });
     }
     for (const e of edges) {
@@ -256,6 +239,16 @@ export class GraphRenderer {
     const perf = new PerfTimer();
     perf.mark('total');
 
+    // 去重节点
+    const addedNodes: GraphNode[] = [];
+    for (const n of newNodes) {
+      if (!this._nodeMap.has(n.id)) {
+        this._nodeMap.set(n.id, { raw: n });
+        this._nodes.push(n);
+        addedNodes.push(n);
+      }
+    }
+
     // 去重边
     const addedEdges: GraphEdge[] = [];
     for (const e of newEdges) {
@@ -264,22 +257,6 @@ export class GraphRenderer {
         this._edgeSet.add(key);
         this._edges.push(e);
         addedEdges.push(e);
-      }
-    }
-
-    // 收集新增边引用的节点 ID，仅添加被边连接的新节点（过滤孤立节点）
-    const newConnectedIds = new Set<string>();
-    for (const e of addedEdges) {
-      newConnectedIds.add(e.caller || e.source || '');
-      newConnectedIds.add(e.callee || e.target || '');
-    }
-
-    const addedNodes: GraphNode[] = [];
-    for (const n of newNodes) {
-      if (!this._nodeMap.has(n.id) && newConnectedIds.has(n.id)) {
-        this._nodeMap.set(n.id, { raw: n });
-        this._nodes.push(n);
-        addedNodes.push(n);
       }
     }
 
@@ -1054,6 +1031,22 @@ export class GraphRenderer {
         const src = e.caller || e.source || '';
         const tgt = e.callee || e.target || '';
         if (!src || !tgt) return null;
+
+        // 自环边（递归调用自身）：使用 top→bottom 端口形成可见回路
+        if (src === tgt) {
+          return {
+            id: `edge-${src}-${tgt}-${i}`,
+            source: src,
+            target: tgt,
+            type: 'cubic-vertical',
+            style: {
+              sourcePort: 'top',
+              targetPort: 'bottom',
+              curveOffset: 40,
+            },
+            data: { raw: e },
+          };
+        }
 
         const srcPos = posMap.get(src);
         const tgtPos = posMap.get(tgt);
