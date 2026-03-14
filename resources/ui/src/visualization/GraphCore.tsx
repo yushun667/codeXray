@@ -31,6 +31,7 @@ import type { GraphToHostMessage } from '../shared/protocol';
 import type { FlowNodeData } from './adapters/callGraph';
 import { getVscodeApi } from '../shared/vscodeApi';
 import { GraphNode } from './GraphNode';
+import { pushOverlapping } from './graphLayout';
 
 const nodeTypes = { graphNode: GraphNode };
 
@@ -99,6 +100,21 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu,
   const onNodeDragStart = useCallback(() => {
     onBeforeDrag?.();
   }, [onBeforeDrag]);
+
+  // 节点拖拽中：实时碰撞检测，推开被覆盖的节点
+  const onNodeDrag = useCallback(
+    (_: React.MouseEvent, draggedNode: Node<FlowNodeData>) => {
+      setNodes((curNodes) => {
+        // 先把被拖拽节点的最新位置更新到列表中
+        const updated = curNodes.map((n) =>
+          n.id === draggedNode.id ? { ...n, position: draggedNode.position } : n
+        );
+        const pushed = pushOverlapping(draggedNode.id, updated);
+        return pushed ?? updated;
+      });
+    },
+    [setNodes]
+  );
 
   // 节点变更：删除节点时先由 React Flow 处理，再通知 GraphPage 做孤立清理
   const onNodesChange = useCallback(
@@ -173,6 +189,7 @@ export function GraphCore({ nodes, edges, setNodes, setEdges, onNodeContextMenu,
         onEdgesChange={onEdgesChange}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeDragStart={onNodeDragStart}
+        onNodeDrag={onNodeDrag}
         onNodeContextMenu={onNodeContextMenuHandler}
         onSelectionContextMenu={onSelectionContextMenuHandler}
         onPaneContextMenu={onPaneContextMenu}

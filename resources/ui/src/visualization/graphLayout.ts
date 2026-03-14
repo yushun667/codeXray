@@ -5,14 +5,14 @@
  * - 查询入口节点（root）居中放置
  * - 调用者（callers）在左侧，被调用者（callees）在右侧
  * - 通过 BFS 计算每个节点到 root 的有向距离，用 dagre rank 约束强制分层
- * - 同层节点垂直等距排列，层间水平间距保证不重叠
+ * - 按列对齐：左侧列右对齐、右侧列左对齐、中间列居中对齐
  *
  * 通用布局（rootNodeIds 为空或非调用图类型）：
  * - 标准 dagre LR 布局，无入边节点在左，后继在右
  *
- * 碰撞检测：
- * - dagre 布局后执行碰撞检测，对重叠节点进行位移修正
- * - 节点间最小间距：水平 RANK_SEP，垂直 NODE_SEP
+ * 拖拽碰撞检测：
+ * - 导出 NODE_WIDTH / NODE_HEIGHT 常量和 pushOverlapping() 函数
+ * - GraphCore 在 onNodeDrag 中调用 pushOverlapping() 实时推开被覆盖的节点
  *
  * 节点尺寸：minWidth 200、maxWidth 360，布局占位宽 280、高 60
  */
@@ -23,83 +23,15 @@ import type { GraphType } from '../shared/types';
 import dagre from 'dagre';
 
 /** 布局占位宽，取 minWidth(200)~maxWidth(360) 中间 */
-const NODE_WIDTH = 280;
+export const NODE_WIDTH = 280;
 /** 布局占位高 */
-const NODE_HEIGHT = 60;
+export const NODE_HEIGHT = 60;
 /** 层间距（水平方向，LR 布局） */
 const RANK_SEP = 120;
 /** 同层节点间距（垂直方向） */
 const NODE_SEP = 40;
-/** 碰撞检测水平最小间距 */
-const COLLISION_PAD_X = 20;
-/** 碰撞检测垂直最小间距 */
-const COLLISION_PAD_Y = 20;
-
-/**
- * 碰撞检测与修正：检测节点重叠并进行位移分离。
- * 遍历所有节点对，若包围盒重叠则沿最小穿透方向推开。
- * 最多迭代 MAX_ITERATIONS 轮以确保收敛。
- *
- * @param positions 节点 ID → {x, y} 的映射（dagre 中心坐标）
- * @param width 节点宽度
- * @param height 节点高度
- * @param padX 水平最小间距
- * @param padY 垂直最小间距
- */
-function resolveCollisions(
-  positions: Map<string, { x: number; y: number }>,
-  width: number,
-  height: number,
-  padX: number,
-  padY: number
-): void {
-  const MAX_ITERATIONS = 10;
-  const ids = Array.from(positions.keys());
-  const halfW = width / 2 + padX / 2;
-  const halfH = height / 2 + padY / 2;
-
-  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-    let hasOverlap = false;
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const a = positions.get(ids[i])!;
-        const b = positions.get(ids[j])!;
-        const dx = Math.abs(a.x - b.x);
-        const dy = Math.abs(a.y - b.y);
-        // 检查包围盒是否重叠
-        if (dx < halfW * 2 && dy < halfH * 2) {
-          hasOverlap = true;
-          // 计算穿透深度
-          const overlapX = halfW * 2 - dx;
-          const overlapY = halfH * 2 - dy;
-          // 沿最小穿透方向推开
-          if (overlapX < overlapY) {
-            // 水平推开
-            const pushX = overlapX / 2 + 1;
-            if (a.x <= b.x) {
-              a.x -= pushX;
-              b.x += pushX;
-            } else {
-              a.x += pushX;
-              b.x -= pushX;
-            }
-          } else {
-            // 垂直推开
-            const pushY = overlapY / 2 + 1;
-            if (a.y <= b.y) {
-              a.y -= pushY;
-              b.y += pushY;
-            } else {
-              a.y += pushY;
-              b.y -= pushY;
-            }
-          }
-        }
-      }
-    }
-    if (!hasOverlap) break;
-  }
-}
+/** 碰撞推开最小间距 */
+const COLLISION_PAD = 20;
 
 /**
  * BFS 计算从 root 节点集合出发，每个节点的有向层级：
@@ -187,73 +119,73 @@ function computeDirectedRanks(
 }
 
 /**
- * 按层级对齐节点 x 坐标：
- * - 负层级（callers，左侧）：同列节点右对齐（右边缘对齐到该列最大 x + NODE_WIDTH/2）
- * - 正层级（callees，右侧）：同列节点左对齐（左边缘对齐到该列最小 x - NODE_WIDTH/2）
- * - 零层级（root，中间）：同列节点水平居中对齐
+ * 拖拽碰撞检测：检查被拖拽节点与其他节点是否重叠，推开被覆盖的节点。
+ * 由 GraphCore 的 onNodeDrag 回调中调用。
  *
- * @param positions 节点 ID → {x, y} 的映射（中心坐标）
- * @param directedRanks 节点 ID → 有向层级（负=callers，0=root，正=callees）
- * @param width 节点宽度
+ * @param draggedId 正在拖拽的节点 ID
+ * @param allNodes 所有节点（含拖拽中节点的最新位置）
+ * @returns 需要更新位置的节点列表（不含被拖拽的节点自身），null 表示无冲突
  */
-function alignByRank(
-  positions: Map<string, { x: number; y: number }>,
-  directedRanks: Map<string, number>,
-  width: number
-): void {
-  // 按原始有向层级分组
-  const rankGroups = new Map<number, string[]>();
-  for (const [id, rank] of directedRanks) {
-    if (!positions.has(id)) continue;
-    let group = rankGroups.get(rank);
-    if (!group) {
-      group = [];
-      rankGroups.set(rank, group);
-    }
-    group.push(id);
-  }
+export function pushOverlapping<T>(
+  draggedId: string,
+  allNodes: Node<T>[]
+): Node<T>[] | null {
+  const dragged = allNodes.find((n) => n.id === draggedId);
+  if (!dragged) return null;
 
-  const halfW = width / 2;
+  // 被拖拽节点的包围盒（position 是左上角）
+  const dLeft = dragged.position.x;
+  const dTop = dragged.position.y;
+  const dRight = dLeft + NODE_WIDTH;
+  const dBottom = dTop + NODE_HEIGHT;
 
-  for (const [rank, ids] of rankGroups) {
-    if (ids.length <= 1) continue; // 单节点无需对齐
+  let changed = false;
+  const result = allNodes.map((node) => {
+    if (node.id === draggedId) return node;
 
-    if (rank < 0) {
-      // 左侧 callers：右对齐 — 所有节点的右边缘（x + halfW）对齐到该列最大值
-      let maxRight = -Infinity;
-      for (const id of ids) {
-        const pos = positions.get(id)!;
-        const right = pos.x + halfW;
-        if (right > maxRight) maxRight = right;
-      }
-      for (const id of ids) {
-        const pos = positions.get(id)!;
-        pos.x = maxRight - halfW;
-      }
-    } else if (rank > 0) {
-      // 右侧 callees：左对齐 — 所有节点的左边缘（x - halfW）对齐到该列最小值
-      let minLeft = Infinity;
-      for (const id of ids) {
-        const pos = positions.get(id)!;
-        const left = pos.x - halfW;
-        if (left < minLeft) minLeft = left;
-      }
-      for (const id of ids) {
-        const pos = positions.get(id)!;
-        pos.x = minLeft + halfW;
-      }
+    const nLeft = node.position.x;
+    const nTop = node.position.y;
+    const nRight = nLeft + NODE_WIDTH;
+    const nBottom = nTop + NODE_HEIGHT;
+
+    // 检查是否与被拖拽节点重叠（含间距）
+    const overlapX = !(nRight + COLLISION_PAD <= dLeft || nLeft - COLLISION_PAD >= dRight);
+    const overlapY = !(nBottom + COLLISION_PAD <= dTop || nTop - COLLISION_PAD >= dBottom);
+
+    if (!overlapX || !overlapY) return node;
+
+    // 有重叠 → 沿最小穿透方向推开
+    changed = true;
+
+    // 四个方向的穿透深度
+    const pushRight = dRight + COLLISION_PAD - nLeft;   // 推向右
+    const pushLeft = nRight + COLLISION_PAD - dLeft;    // 推向左
+    const pushDown = dBottom + COLLISION_PAD - nTop;    // 推向下
+    const pushUp = nBottom + COLLISION_PAD - dTop;      // 推向上
+
+    // 选择最小穿透方向
+    const minPush = Math.min(pushRight, pushLeft, pushDown, pushUp);
+
+    let newX = node.position.x;
+    let newY = node.position.y;
+
+    if (minPush === pushRight) {
+      newX = dRight + COLLISION_PAD;
+    } else if (minPush === pushLeft) {
+      newX = dLeft - NODE_WIDTH - COLLISION_PAD;
+    } else if (minPush === pushDown) {
+      newY = dBottom + COLLISION_PAD;
     } else {
-      // 中间 root：居中对齐 — 所有节点 x 取平均值
-      let sumX = 0;
-      for (const id of ids) {
-        sumX += positions.get(id)!.x;
-      }
-      const avgX = sumX / ids.length;
-      for (const id of ids) {
-        positions.get(id)!.x = avgX;
-      }
+      newY = dTop - NODE_HEIGHT - COLLISION_PAD;
     }
-  }
+
+    return {
+      ...node,
+      position: { x: newX, y: newY },
+    };
+  });
+
+  return changed ? result : null;
 }
 
 /**
@@ -262,7 +194,9 @@ function alignByRank(
  * 当提供 rootNodeIds 时启用"根居中"模式：
  * - 通过 BFS 计算有向层级（callers 负层级在左，callees 正层级在右）
  * - 将层级归一化后作为 dagre 的 rank 约束
- * - 布局后对根节点做 x 轴居中平移
+ *
+ * dagre 自身的 nodesep/ranksep 已保证节点不重叠，无需额外碰撞检测。
+ * 拖拽时的碰撞检测由 pushOverlapping() 在 GraphCore 中实时处理。
  *
  * @param nodes React Flow 节点数组
  * @param edges React Flow 边数组
@@ -329,33 +263,15 @@ export function getLayoutedElements<T = Record<string, unknown>>(
 
     dagre.layout(g);
 
-    // 收集布局后的中心坐标
-    const positions = new Map<string, { x: number; y: number }>();
-    for (const node of nodes) {
-      const n = g.node(node.id);
-      if (n != null) {
-        positions.set(node.id, { x: n.x, y: n.y });
-      }
-    }
-
-    // 碰撞检测：修正重叠节点
-    resolveCollisions(positions, NODE_WIDTH, NODE_HEIGHT, COLLISION_PAD_X, COLLISION_PAD_Y);
-
-    // 按层级对齐：callers 右对齐、callees 左对齐、root 居中
-    if (directedRanks) {
-      alignByRank(positions, directedRanks, NODE_WIDTH);
-      // 对齐后可能产生新的垂直方向重叠，再次碰撞检测
-      resolveCollisions(positions, NODE_WIDTH, NODE_HEIGHT, COLLISION_PAD_X, COLLISION_PAD_Y);
-    }
-
+    // dagre 保证同 rank 节点 x 相同、垂直间距 ≥ nodesep，无需额外碰撞检测
     return nodes.map((node) => {
-      const pos = positions.get(node.id);
-      if (pos == null) return node;
+      const n = g.node(node.id);
+      if (n == null) return node;
       return {
         ...node,
         position: {
-          x: pos.x - NODE_WIDTH / 2,
-          y: pos.y - NODE_HEIGHT / 2,
+          x: n.x - NODE_WIDTH / 2,
+          y: n.y - NODE_HEIGHT / 2,
         },
         sourcePosition: Position.Right,  // 后继在右侧
         targetPosition: Position.Left,   // 前驱从左侧进入
