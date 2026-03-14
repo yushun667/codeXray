@@ -704,28 +704,10 @@ export class GraphRenderer {
   }
 
   /**
-   * 动态启用/禁用 hover-activate 行为。
-   * 路径高亮激活期间需禁用，否则 pointer-leave 会清除 pathGlow/dimmed 状态。
-   * 使用 setBehaviors 彻底添加/移除行为，比 updateBehavior 更可靠。
+   * hover-activate 已移除（G6 v5 ID 类型不一致 bug），此方法保留为空操作。
    */
-  setHoverActivateEnabled(enabled: boolean): void {
-    if (!this._graph) return;
-    try {
-      this._graph.setBehaviors((behaviors: any[]) => {
-        const filtered = behaviors.filter(
-          (b: any) => !(typeof b === 'object' && b.key === 'hover-activate'),
-        );
-        if (enabled) {
-          filtered.push({
-            type: 'hover-activate',
-            key: 'hover-activate',
-            degree: 1,
-            direction: 'both',
-          });
-        }
-        return filtered;
-      });
-    } catch { /* ignore */ }
+  setHoverActivateEnabled(_enabled: boolean): void {
+    // no-op: hover-activate 已从行为列表中移除
   }
 
   /** 销毁图实例并清理资源 */
@@ -903,8 +885,10 @@ export class GraphRenderer {
         key: 'drag-element',
         enableElements: ['node'],
       },
-      // 悬停高亮相邻节点（key 用于路径高亮期间动态禁用）
-      { type: 'hover-activate', key: 'hover-activate', degree: 1, direction: 'both' },
+      // 注意：hover-activate 已移除。该行为在 degree>=1 时调用
+      // getElementNthDegreeIds 获取邻居 ID，但返回的 ID 与 G6 内部
+      // 元素注册表不一致（数值型 ID 类型不匹配），导致
+      // setElementState 抛出 "Unknown element type of id" 大量报错。
     ];
 
     if (isLarge) {
