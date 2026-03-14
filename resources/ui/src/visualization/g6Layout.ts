@@ -149,6 +149,11 @@ class BidirectionalDagreLayout extends BaseLayout<BidirectionalDagreOptions> {
         ranksep,
         marginx: 20,
         marginy: 20,
+        // 禁用 dagre 内置排名算法，使用我们通过 BFS 计算的精确 rank 约束。
+        // dagre 默认的 network-simplex 排名器会无条件覆盖节点 rank 值，
+        // 导致调用者/被调用者分层混乱（节点与根节点出现在同一列）。
+        // 设置 ranker='none' 后 dagre 只负责同层内节点排序和坐标计算。
+        ranker: 'none',
       });
       g.setDefaultEdgeLabel(() => ({}));
 
