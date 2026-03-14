@@ -122,6 +122,8 @@ async function main(): Promise<void> {
   } finally {
     loadingEl.classList.add('hidden');
   }
+
+  containerEl.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 main();
