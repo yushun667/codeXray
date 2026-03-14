@@ -117,21 +117,26 @@ export class GraphRenderer {
     this._collapsedChildren.clear();
     this._collapsedNodes.clear();
 
-    // 过滤孤立节点：仅保留被边引用的节点和根节点
-    const connectedIds = new Set<string>([rootId]);
+    // 收集所有被边引用的节点 ID
+    const connectedIds = new Set<string>();
+    connectedIds.add(rootId);
     for (const e of edges) {
-      connectedIds.add(String(e.caller || e.source));
-      connectedIds.add(String(e.callee || e.target));
-    }
-    const filteredNodes = nodes.filter((n) => connectedIds.has(n.id));
-    if (filteredNodes.length < nodes.length) {
-      console.log('[renderer] 过滤孤立节点:', nodes.length - filteredNodes.length, '个');
+      const src = e.caller || e.source || '';
+      const tgt = e.callee || e.target || '';
+      connectedIds.add(src);
+      connectedIds.add(tgt);
     }
 
-    this._nodes = filteredNodes;
+    // 过滤孤立节点（保留根节点和所有被边引用的节点）
+    const filtered = nodes.filter((n) => connectedIds.has(n.id));
+    if (filtered.length < nodes.length) {
+      console.log('[renderer] 过滤孤立节点:', nodes.length - filtered.length, '个');
+    }
+
+    this._nodes = filtered;
     this._edges = edges;
 
-    for (const n of filteredNodes) {
+    for (const n of filtered) {
       this._nodeMap.set(n.id, { raw: n });
     }
     for (const e of edges) {
@@ -262,11 +267,11 @@ export class GraphRenderer {
       }
     }
 
-    // 收集新边引用的节点 ID，仅添加被边连接的节点（过滤孤立节点）
+    // 收集新增边引用的节点 ID，仅添加被边连接的新节点（过滤孤立节点）
     const newConnectedIds = new Set<string>();
     for (const e of addedEdges) {
-      newConnectedIds.add(String(e.caller || e.source));
-      newConnectedIds.add(String(e.callee || e.target));
+      newConnectedIds.add(e.caller || e.source || '');
+      newConnectedIds.add(e.callee || e.target || '');
     }
 
     const addedNodes: GraphNode[] = [];
