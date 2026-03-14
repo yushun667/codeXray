@@ -38,75 +38,104 @@ static std::string FilePath(sqlite3* db, int64_t fid,
   return path;
 }
 
-// Resolve symbol by USR or name, return DB id
-// 策略：1. USR 精确匹配；2. name + def_file_id JOIN；
-//       3. name + USR 包含文件名 fallback（处理 def_file_id 为 NULL 的情况）
+// Resolve symbol by USR, name, or qualified_name, return DB id.
+// 策略：1. USR 精确匹配；
+//       2. name + def_file_id JOIN；
+//       3. qualified_name + def_file_id JOIN（支持 "llvm::foo" 等全限定名）；
+//       4. 从全限定名提取短名再匹配 name + file；
+//       5. USR 中包含文件名 fallback；
+//       6. 无文件过滤的 name / qualified_name 匹配。
 static int64_t ResolveSymbolId(sqlite3* db,
                                 const std::string& usr_or_name,
                                 const std::string& file_path) {
   if (usr_or_name.empty()) return 0;
-  // Try by USR first (USRs start with 'c:')
-  if (usr_or_name.size() > 2 && usr_or_name[0] == 'c' && usr_or_name[1] == ':') {
+
+  // 辅助 lambda：执行单条查询返回 ID
+  auto queryOne = [&](const char* sql, const std::string& p1,
+                      const std::string& p2 = "") -> int64_t {
     sqlite3_stmt* s = nullptr;
-    sqlite3_prepare_v2(db, "SELECT id FROM symbol WHERE usr=?", -1, &s, nullptr);
-    BindText(s, 1, usr_or_name);
+    sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+    BindText(s, 1, p1);
+    if (!p2.empty()) BindText(s, 2, p2);
     int64_t id = 0;
     if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
+    return id;
+  };
+
+  // 1. USR 精确匹配
+  if (usr_or_name.size() > 2 && usr_or_name[0] == 'c' && usr_or_name[1] == ':') {
+    int64_t id = queryOne("SELECT id FROM symbol WHERE usr=?", usr_or_name);
     if (id) return id;
   }
-  // Try by name + file (via def_file_id JOIN)
+
+  // 判断输入是否为全限定名（包含 ::）
+  const bool is_qualified = usr_or_name.find("::") != std::string::npos;
+  // 从全限定名提取短名（最后一个 :: 之后的部分）
+  std::string short_name;
+  if (is_qualified) {
+    auto dpos = usr_or_name.rfind("::");
+    if (dpos != std::string::npos && dpos + 2 < usr_or_name.size())
+      short_name = usr_or_name.substr(dpos + 2);
+  }
+
+  const std::string file_like = "%" + file_path + "%";
+
   if (!file_path.empty()) {
-    sqlite3_stmt* s = nullptr;
-    sqlite3_prepare_v2(db,
+    // 2. name + def_file_id
+    int64_t id = queryOne(
         "SELECT s.id FROM symbol s JOIN file f ON s.def_file_id=f.id"
-        " WHERE s.name=? AND f.path LIKE ? LIMIT 1", -1, &s, nullptr);
-    BindText(s, 1, usr_or_name);
-    BindText(s, 2, "%" + file_path + "%");
-    int64_t id = 0;
-    if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+        " WHERE s.name=? AND f.path LIKE ? LIMIT 1",
+        usr_or_name, file_like);
     if (id) return id;
 
-    // 兜底：尝试按 decl_file_id 查找（处理 def_file_id 为空的情况）
-    sqlite3_stmt* sd = nullptr;
-    sqlite3_prepare_v2(db,
-        "SELECT s.id FROM symbol s JOIN file f ON s.decl_file_id=f.id"
-        " WHERE s.name=? AND f.path LIKE ? LIMIT 1", -1, &sd, nullptr);
-    BindText(sd, 1, usr_or_name);
-    BindText(sd, 2, "%" + file_path + "%");
-    int64_t id_decl = 0;
-    if (sqlite3_step(sd) == SQLITE_ROW) id_decl = sqlite3_column_int64(sd, 0);
-    sqlite3_finalize(sd);
-    if (id_decl) return id_decl;
+    // 3. qualified_name + def_file_id（处理传入 "llvm::hasAssumption" 等情况）
+    if (is_qualified) {
+      id = queryOne(
+          "SELECT s.id FROM symbol s JOIN file f ON s.def_file_id=f.id"
+          " WHERE s.qualified_name=? AND f.path LIKE ? LIMIT 1",
+          usr_or_name, file_like);
+      if (id) return id;
+    }
 
-    // Fallback: def_file_id 为 NULL 时，通过 USR 中包含的文件名匹配
-    // 许多匿名命名空间的方法其 USR 以文件名开头（如 "c:IntrinsicEmitter.cpp@..."）
-    // 提取 file_path 的基本文件名用于 LIKE 匹配 USR
+    // 4. 从全限定名提取短名，用短名 + file 匹配
+    if (!short_name.empty()) {
+      id = queryOne(
+          "SELECT s.id FROM symbol s JOIN file f ON s.def_file_id=f.id"
+          " WHERE s.name=? AND f.path LIKE ? LIMIT 1",
+          short_name, file_like);
+      if (id) return id;
+    }
+
+    // 5. 兜底：按 decl_file_id 查找（def_file_id 为空）
+    id = queryOne(
+        "SELECT s.id FROM symbol s JOIN file f ON s.decl_file_id=f.id"
+        " WHERE s.name=? AND f.path LIKE ? LIMIT 1",
+        is_qualified ? (short_name.empty() ? usr_or_name : short_name) : usr_or_name,
+        file_like);
+    if (id) return id;
+
+    // 6. USR 中包含文件名的兜底匹配
     std::string basename = file_path;
     auto pos = basename.rfind('/');
     if (pos != std::string::npos) basename = basename.substr(pos + 1);
     if (!basename.empty()) {
-      sqlite3_stmt* s2 = nullptr;
-      sqlite3_prepare_v2(db,
+      const std::string& match_name = short_name.empty() ? usr_or_name : short_name;
+      id = queryOne(
           "SELECT id FROM symbol WHERE name=? AND usr LIKE ? LIMIT 1",
-          -1, &s2, nullptr);
-      BindText(s2, 1, usr_or_name);
-      BindText(s2, 2, "%" + basename + "%");
-      int64_t id2 = 0;
-      if (sqlite3_step(s2) == SQLITE_ROW) id2 = sqlite3_column_int64(s2, 0);
-      sqlite3_finalize(s2);
-      if (id2) return id2;
+          match_name, "%" + basename + "%");
+      if (id) return id;
     }
   }
-  // No file filter, just match by name
-  sqlite3_stmt* s = nullptr;
-  sqlite3_prepare_v2(db, "SELECT s.id FROM symbol s WHERE s.name=? LIMIT 1",
-                     -1, &s, nullptr);
-  BindText(s, 1, usr_or_name);
-  int64_t id = 0;
-  if (sqlite3_step(s) == SQLITE_ROW) id = sqlite3_column_int64(s, 0);
-  sqlite3_finalize(s);
+
+  // 7. 无文件过滤：先试 name，再试 qualified_name
+  int64_t id = queryOne("SELECT id FROM symbol WHERE name=? LIMIT 1", usr_or_name);
+  if (!id && is_qualified) {
+    id = queryOne("SELECT id FROM symbol WHERE qualified_name=? LIMIT 1", usr_or_name);
+  }
+  if (!id && !short_name.empty()) {
+    id = queryOne("SELECT id FROM symbol WHERE name=? LIMIT 1", short_name);
+  }
   return id;
 }
 
