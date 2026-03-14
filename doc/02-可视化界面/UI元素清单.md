@@ -116,31 +116,27 @@
 | 画布 | AntV G6 Canvas | 节点、边、拖拽、框选、缩放、平移 |
 | 图节点 | G6 rect 节点 | 宽 280、高度动态（≥60）；4 端口（上右下左）；根节点橙色、普通蓝色；双击 postMessage(gotoSymbol) 跳转代码 |
 | 边 | G6 cubic-horizontal | 水平曲线 + 箭头；按 (source,target) 去重，总数上限 2500 |
-| 路径高亮 | 状态系统 | 单击节点：BFS 找根→目标最短路径，路径高亮、其余暗化；点击画布清除 |
+| 路径高亮（流动动画） | 状态系统 + rAF 动画 | 单击节点：BFS 找根→目标最短路径，路径节点边框发光（pathGlow 状态 + 阴影），路径边使用 lineDash 虚线 + requestAnimationFrame 驱动的 lineDashOffset 流动动画（~12fps），其余元素暗化（dimmed）；点击画布清除 |
+| 节点折叠/展开 | badge + hideElement/showElement | 有后继的节点右侧显示折叠 badge（▶/▼），折叠时显示隐藏子节点数量（如 "▶ 5"）；点击 badge 或右键菜单触发折叠/展开，使用 G6 hideElement/showElement 隐藏/显示子树；支持嵌套折叠 |
 | 框选 | brush-select 行为 | Shift+左键拖拽框选节点 |
 | 撤销 | 键盘快捷键 | Ctrl/Cmd+Z 撤销（G6 History 插件） |
 | 恢复 | 键盘快捷键 | Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复 |
 | 工具栏「适应画布」 | 浮动按钮 | 右下角，点击执行 fitView |
 | 工具栏「重新布局」 | 浮动按钮 | 右下角，点击重新执行布局并适应画布 |
 
-### 3.3 节点右键菜单（GraphContextMenu.tsx）
+### 3.3 节点右键菜单（context-menu.ts / NodeContextMenu）
 
 | 元素 | 类型 | 说明 |
 |------|------|------|
-| 浮层菜单 | 固定定位 | 出现在右键位置 |
-| 菜单项「展开前置节点」 | 按钮 | postMessage `queryPredecessors`，展开该节点的调用者 |
-| 菜单项「展开后置节点」 | 按钮 | postMessage `querySuccessors`，展开该节点调用的函数 |
+| 浮层菜单 | 固定定位 DOM | 出现在右键位置，自动防溢出 |
+| 菜单项「← 查询调用节点」 | 按钮 | postMessage `queryPredecessors`，展开该节点的调用者 |
+| 菜单项「→ 查询被调用节点」 | 按钮 | postMessage `querySuccessors`，展开该节点调用的函数 |
 | 分隔线 | 分隔符 | 视觉分隔不同功能组 |
-| 菜单项「跳转到定义」 | 按钮 | postMessage `gotoSymbol`，跳转到节点代码定义位置；无定义信息时禁用 |
+| 菜单项「▼ 折叠子树」/「▶ 展开子树」 | 按钮 | 根据节点当前折叠状态显示；仅有后继节点时出现 |
+| 菜单项「选择子树」 | 按钮 | BFS 选中该节点及所有后代，设为 selected 状态 |
 | 分隔线 | 分隔符 | 视觉分隔 |
-| 菜单项「删除节点」 | 按钮 | 从图中移除该节点及其关联边 |
-
-### 3.4 框选右键菜单（SelectionContextMenu）
-
-| 元素 | 类型 | 说明 |
-|------|------|------|
-| 浮层菜单 | 固定定位 | 框选多个节点后右键弹出 |
-| 菜单项「删除选中的 N 个节点」 | 按钮 | 批量删除所有选中节点及其关联边 |
+| 菜单项「✕ 删除选中节点 (N)」 | 按钮（危险色） | 多选时出现，批量删除所有选中节点（排除根节点） |
+| 菜单项「✕ 删除节点」 | 按钮（危险色） | 删除当前节点及其关联边；根节点时不显示 |
 
 ---
 

@@ -59,7 +59,8 @@
 | 画布 | G6Graph | AntV G6 Canvas 容器 | 节点、边、缩放平移、框选、拖拽 |
 | 图节点 | G6Graph | G6 rect 节点 | 宽 280、高度动态（≥60）；4 端口（上右下左），边自动选择最近端口；根节点橙色、普通蓝色；双击 postMessage(gotoSymbol) 跳转代码 |
 | 边 | G6Graph | G6 cubic-horizontal | 水平曲线 + 箭头；同 (source,target) 去重，总数上限 2500 |
-| 路径高亮 | G6Graph | 状态系统 | 单击节点：BFS 找从根节点到目标的最短路径，路径上节点/边设 highlight 状态（橙色描边），其余设 dimmed（半透明）；点击画布空白区域清除 |
+| 路径高亮（流动动画） | G6Graph | 状态系统 + rAF 动画 | 单击节点：BFS 找从根节点到目标的最短路径，路径节点设 pathGlow 状态（高亮边框 + 发光阴影），路径边设 pathGlow 状态（高亮色 + lineDash 虚线），通过 requestAnimationFrame 驱动 lineDashOffset 产生流动光效（~12fps），其余元素设 dimmed（半透明）；点击画布空白区域清除高亮并停止动画 |
+| 节点折叠/展开 | G6Graph | badge + G6 hideElement/showElement | 有后继节点（callees）的节点右侧显示折叠/展开 badge（▶/▼），折叠时额外显示隐藏子节点数量（如 "▶ 5"）；点击 badge 区域触发折叠（BFS 查找并隐藏所有后代）或展开（恢复显示，尊重嵌套折叠状态）；右键菜单也提供折叠/展开子树选项 |
 | 查询根节点高亮 | G6Graph | 节点样式 | 查询入口函数节点使用橙色底色（`rgb(193,125,55)`）区分，3 级回退匹配策略（querySymbol 精确 → label 首行 → 拓扑度数最高） |
 | 查询根节点居中布局 | g6Layout.ts | 自定义 G6 布局 | 查询入口节点居中放置，调用者（callers）在左侧、被调用者（callees）在右侧；通过 BFS 计算有向层级（负层级=调用者侧，0=根，正层级=被调用者侧），注入 dagre rank 约束强制分层 |
 | 撤销/恢复 | G6Graph | 键盘快捷键 | Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复；基于 G6 History 插件 |
