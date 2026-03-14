@@ -35,6 +35,23 @@ interface InternalNode {
 const LARGE_GRAPH_THRESHOLD = 500;
 
 /**
+ * 判断事件是否由鼠标右键触发。
+ * 兼容 G6 v5 的 FederatedPointerEvent 和底层原生事件，
+ * 同时检查 button（pointerdown/pointerup 时准确）
+ * 和 buttons 位掩码（pointermove 拖拽期间持续有效）。
+ */
+function isRightButton(event: Record<string, unknown>): boolean {
+  if (event.button === 2) return true;
+  if (typeof event.buttons === 'number' && ((event.buttons as number) & 2) !== 0) return true;
+  const nativeEvt = (event as any).originalEvent ?? (event as any).nativeEvent;
+  if (nativeEvt) {
+    if (nativeEvt.button === 2) return true;
+    if (typeof nativeEvt.buttons === 'number' && (nativeEvt.buttons & 2) !== 0) return true;
+  }
+  return false;
+}
+
+/**
  * GraphRenderer：G6 图的核心管理类。
  * 负责图的创建、布局计算、节点/边样式映射、交互行为配置，
  * 以及折叠/展开、undo/redo 等高级功能。
@@ -820,10 +837,7 @@ export class GraphRenderer {
       {
         type: 'drag-canvas',
         key: 'drag-canvas',
-        enable: (event: Record<string, unknown>) => {
-          if (!('button' in event)) return false;
-          return event.button === 2;
-        },
+        enable: (event: Record<string, unknown>) => isRightButton(event),
       },
       // 滚轮缩放
       'zoom-canvas',
@@ -842,7 +856,7 @@ export class GraphRenderer {
         immediately: true,
         trigger: [] as string[],
         enable: (event: Record<string, unknown>) => {
-          if ('button' in event && event.button === 2) return false;
+          if (isRightButton(event)) return false;
           return event.targetType === 'canvas';
         },
         style: { fill: '#4fc3f7', fillOpacity: 0.1, stroke: '#4fc3f7', lineWidth: 1 },
