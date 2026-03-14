@@ -1026,7 +1026,7 @@ export class GraphRenderer {
         }
 
         return {
-          id: e.id || `edge-${src}-${tgt}-${i}`,
+          id: `edge-${src}-${tgt}-${i}`,
           source: src,
           target: tgt,
           style: { sourcePort, targetPort },
