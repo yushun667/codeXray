@@ -1,315 +1,268 @@
-/**
- * 解析引擎 AST：调用链 Action
- * 无 Clang 时占位；有 Clang 时实现 FrontendAction + RecursiveASTVisitor 收集 symbol 与 call_edge。
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.5
- */
-
-#include "ast/call_graph/action.h"
-#include "ast/function_pointer/analyzer.h"
-#include "compile_commands/load.h"
-#include "common/clang_include_detector.h"
-#include "common/logger.h"
-#include "common/path_util.h"
-#include "db/writer/writer.h"
-#include <string>
-#include <vector>
+#include "action.h"
 
 #ifdef CODEXRAY_HAVE_CLANG
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/DeclCXX.h"
-#include "clang/AST/ExprCXX.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/Basic/SourceLocation.h"
-#include "clang/Basic/SourceManager.h"
-#include "llvm/Support/Casting.h"
-#include "clang/Tooling/ArgumentsAdjusters.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "clang/Frontend/FrontendAction.h"
-#include "clang/Index/USRGeneration.h"
-#include "clang/Tooling/CompilationDatabase.h"
-#include "clang/Tooling/Tooling.h"
-#include "llvm/ADT/StringRef.h"
-#include <memory>
-#endif
+#include "../function_pointer/analyzer.h"
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/Index/USRGeneration.h>
+#include <clang/Basic/SourceManager.h>
+#include <llvm/ADT/SmallString.h>
+#include <unordered_map>
+#include <unordered_set>
+#include <string>
 
 namespace codexray {
-
-#ifndef CODEXRAY_HAVE_CLANG
-
-bool RunCallGraphOnTU(const TUEntry& /* tu */, CallGraphOutput* /* out */) {
-  LogInfo("RunCallGraphOnTU: stub (no Clang), skipping");
-  return true;
-}
-
-void* CreateCallGraphAction(CallGraphOutput* /* out */) {
-  return nullptr;
-}
-
-#else  // CODEXRAY_HAVE_CLANG
+namespace call_graph {
 
 namespace {
 
-using namespace clang;
-
-static int GetLine(const SourceManager& SM, SourceLocation loc) {
-  if (loc.isInvalid()) return 0;
-  unsigned line = SM.getSpellingLineNumber(loc);
-  if (line == 0)
-    line = SM.getExpansionLineNumber(loc);
-  return static_cast<int>(line);
-}
-static int GetColumn(const SourceManager& SM, SourceLocation loc) {
-  if (loc.isInvalid()) return 0;
-  return SM.getSpellingColumnNumber(loc);
+static std::string GenUSR(const clang::Decl* d) {
+  llvm::SmallString<128> buf;
+  if (clang::index::generateUSRForDecl(d, buf)) return "";
+  return buf.str().str();
 }
 
-class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
- public:
-  CallGraphVisitor(ASTContext* ctx, CallGraphOutput* out)
-      : ctx_(ctx), out_(out), sm_(&ctx->getSourceManager()) {}
+static std::string GetFilePath(const clang::SourceManager& sm,
+                                clang::SourceLocation loc) {
+  if (loc.isInvalid()) return "";
+  clang::FullSourceLoc full(loc, sm);
+  if (full.isInvalid() || full.isInSystemHeader()) return "";
+  const char* fn = sm.getPresumedLoc(full).getFilename();
+  return fn ? std::string(fn) : std::string();
+}
 
-  bool TraverseFunctionDecl(FunctionDecl* D) {
-    if (!D || !out_) return true;
-    /* 仅跳过隐式声明；类外定义的成员函数 getLocation() 可能指向头文件或无效，仍应收集其定义位置 */
-    if (D->isImplicit())
-      return RecursiveASTVisitor::TraverseFunctionDecl(D);
-    SymbolRecord sym = SymbolFromDecl(D);
-    if (sym.usr.empty()) return RecursiveASTVisitor::TraverseFunctionDecl(D);
-    out_->symbols.push_back(sym);
-    if (D->isThisDeclarationADefinition()) {
-      function_usr_stack_.push_back(current_function_usr_);
-      current_function_usr_ = sym.usr;
-    }
-    bool ok = RecursiveASTVisitor::TraverseFunctionDecl(D);
-    if (D->isThisDeclarationADefinition()) {
-      if (!function_usr_stack_.empty()) {
-        current_function_usr_ = function_usr_stack_.back();
-        function_usr_stack_.pop_back();
-      } else {
-        current_function_usr_.clear();
-      }
-    }
-    return ok;
+struct LocInfo {
+  std::string file;
+  int line = 0, col = 0, end_line = 0, end_col = 0;
+};
+
+static LocInfo GetLocInfo(const clang::SourceManager& sm, clang::SourceRange range) {
+  LocInfo li;
+  clang::FullSourceLoc begin(range.getBegin(), sm);
+  if (begin.isInvalid()) return li;
+  li.file     = GetFilePath(sm, range.getBegin());
+  li.line     = begin.getSpellingLineNumber();
+  li.col      = begin.getSpellingColumnNumber();
+  clang::FullSourceLoc end(range.getEnd(), sm);
+  if (!end.isInvalid()) {
+    li.end_line = end.getSpellingLineNumber();
+    li.end_col  = end.getSpellingColumnNumber();
   }
+  return li;
+}
 
-  /* RecursiveASTVisitor 对以下类型会走各自的 Traverse*，不会走 TraverseFunctionDecl，
-   * 导致未被收集。显式委托到 TraverseFunctionDecl 以记录符号与调用边。 */
-  bool TraverseCXXDeductionGuideDecl(CXXDeductionGuideDecl* D) { return TraverseFunctionDecl(D); }
-  bool TraverseCXXMethodDecl(CXXMethodDecl* D) { return TraverseFunctionDecl(D); }
-  bool TraverseCXXConstructorDecl(CXXConstructorDecl* D) { return TraverseFunctionDecl(D); }
-  bool TraverseCXXDestructorDecl(CXXDestructorDecl* D) { return TraverseFunctionDecl(D); }
-  bool TraverseCXXConversionDecl(CXXConversionDecl* D) { return TraverseFunctionDecl(D); }
+static std::string SymbolKind(const clang::FunctionDecl* fd) {
+  if (clang::isa<clang::CXXDestructorDecl>(fd))  return "destructor";
+  if (clang::isa<clang::CXXConstructorDecl>(fd)) return "constructor";
+  if (clang::isa<clang::CXXMethodDecl>(fd))      return "method";
+  return "function";
+}
 
-  bool VisitCallExpr(CallExpr* E) {
-    if (!E || !out_ || current_function_usr_.empty()) return true;
-    CallEdgeRecord edge;
-    edge.caller_usr = current_function_usr_;
-    edge.edge_type = "direct";
-    SourceLocation loc = E->getBeginLoc();
-    edge.call_site_line = GetLine(*sm_, loc);
-    edge.call_site_column = GetColumn(*sm_, loc);
+class CallGraphVisitor
+    : public clang::RecursiveASTVisitor<CallGraphVisitor> {
+public:
+  CallGraphVisitor(clang::ASTContext& ctx,
+                   std::vector<SymbolRow>* symbols,
+                   std::vector<CallEdgeRow>* edges,
+                   std::vector<std::string>* ref_files,
+                   const std::unordered_map<std::string,
+                       std::vector<std::string>>& fp_map)
+      : ctx_(ctx), sm_(ctx.getSourceManager()),
+        symbols_(symbols), edges_(edges), ref_files_(ref_files),
+        fp_map_(fp_map) {}
 
-    const Expr* calleeExpr = E->getCallee()->IgnoreParenImpCasts();
-    const FunctionDecl* callee = nullptr;
-    if (const auto* memCall = dyn_cast<CXXMemberCallExpr>(E)) {
-      callee = memCall->getMethodDecl();
-      if (callee && isa<CXXDestructorDecl>(callee))
-        edge.edge_type = "destructor";
-      else if (callee && dyn_cast<CXXMethodDecl>(callee) && cast<CXXMethodDecl>(callee)->isVirtual())
-        edge.edge_type = "virtual";
-    }
-    if (!callee) {
-      if (const auto* dre = dyn_cast<DeclRefExpr>(calleeExpr)) {
-        if (const auto* fd = dyn_cast_or_null<FunctionDecl>(dre->getDecl()))
-          callee = fd;
-      }
-    }
-    if (!callee && E->getDirectCallee())
-      callee = E->getDirectCallee();
-    if (callee) {
-      if (isa<CUDAKernelCallExpr>(E))
-        edge.edge_type = "cuda_kernel";
-      edge.callee_usr = GetUSR(callee);
-      if (!edge.callee_usr.empty())
-        out_->edges.push_back(std::move(edge));
+  // TraverseFunctionDecl handles all CXX subclasses
+  bool TraverseFunctionDecl(clang::FunctionDecl* fd) {
+    if (!fd) return true;
+    current_caller_usr_ = "";
+    if (!fd->isThisDeclarationADefinition()) {
+      // Record declaration-only
+      RecordSymbol(fd);
       return true;
     }
-    std::vector<std::string> possible = GetPossibleCallees(E, *ctx_, current_function_usr_);
-    edge.edge_type = "via_function_pointer";
-    for (const std::string& usr : possible) {
-      if (usr.empty()) continue;
-      CallEdgeRecord e2 = edge;
-      e2.callee_usr = usr;
-      out_->edges.push_back(std::move(e2));
-    }
-    return true;
+    RecordSymbol(fd);
+    current_caller_usr_ = GenUSR(fd);
+    bool r = clang::RecursiveASTVisitor<CallGraphVisitor>::TraverseFunctionDecl(fd);
+    current_caller_usr_ = "";
+    return r;
   }
 
-  bool VisitCXXConstructExpr(CXXConstructExpr* E) {
-    if (!E || !out_ || current_function_usr_.empty()) return true;
-    const CXXConstructorDecl* ctor = E->getConstructor();
-    if (!ctor) return true;
-    CallEdgeRecord edge;
-    edge.caller_usr = current_function_usr_;
-    edge.callee_usr = GetUSR(ctor);
-    edge.edge_type = "constructor";
-    SourceLocation loc = E->getBeginLoc();
-    edge.call_site_line = GetLine(*sm_, loc);
-    edge.call_site_column = GetColumn(*sm_, loc);
-    if (!edge.callee_usr.empty())
-      out_->edges.push_back(std::move(edge));
-    return true;
+  bool TraverseCXXMethodDecl(clang::CXXMethodDecl* md) {
+    return TraverseFunctionDecl(md);
+  }
+  bool TraverseCXXConstructorDecl(clang::CXXConstructorDecl* cd) {
+    return TraverseFunctionDecl(cd);
+  }
+  bool TraverseCXXDestructorDecl(clang::CXXDestructorDecl* dd) {
+    return TraverseFunctionDecl(dd);
   }
 
- private:
-  ASTContext* ctx_;
-  CallGraphOutput* out_;
-  SourceManager* sm_;
-  std::string current_function_usr_;
-  std::vector<std::string> function_usr_stack_;
+  bool VisitCallExpr(clang::CallExpr* call) {
+    if (current_caller_usr_.empty()) return true;
+    const clang::SourceManager& sm = sm_;
 
-  std::string GetUSR(const Decl* D) {
-    if (!D) return {};
-    llvm::SmallString<256> buf;
-    if (index::generateUSRForDecl(D, buf))
-      return {};
-    return std::string(buf.str());
-  }
+    auto* callee_decl = call->getDirectCallee();
+    if (callee_decl) {
+      // Direct or virtual call
+      std::string callee_usr = GenUSR(callee_decl);
+      if (callee_usr.empty()) return true;
 
-  SymbolRecord SymbolFromDecl(const FunctionDecl* D) {
-    SymbolRecord sym;
-    sym.usr = GetUSR(D);
-    if (sym.usr.empty()) return sym;
-    sym.name = D->getNameAsString();
-    if (const DeclContext* dc = D->getEnclosingNamespaceContext())
-      if (!dc->isTranslationUnit())
-        sym.qualified_name = D->getQualifiedNameAsString();
-    if (sym.qualified_name.empty()) sym.qualified_name = sym.name;
-    if (dyn_cast<CXXConstructorDecl>(D)) sym.kind = "constructor";
-    else if (dyn_cast<CXXDestructorDecl>(D)) sym.kind = "destructor";
-    else if (dyn_cast<CXXMethodDecl>(D)) sym.kind = "method";
-    else if (dyn_cast<CXXDeductionGuideDecl>(D)) sym.kind = "deduction_guide";
-    else sym.kind = "function";
-    const SourceManager& SM = *sm_;
-    FileID mainFID = SM.getMainFileID();
-    SourceLocation declLoc = D->getLocation();
-    if (declLoc.isValid()) {
-      sym.decl_line = GetLine(SM, declLoc);
-      sym.decl_column = GetColumn(SM, declLoc);
-      sym.decl_in_tu_file = (SM.getFileID(declLoc) == mainFID);
-      const Decl* can = D->getCanonicalDecl();
-      if (can && can != D) {
-        SourceLocation canEnd = can->getEndLoc();
-        if (canEnd.isValid()) {
-          sym.decl_line_end = GetLine(SM, canEnd);
-          sym.decl_column_end = GetColumn(SM, canEnd);
-        }
-      } else {
-        sym.decl_line_end = sym.decl_line;
-        sym.decl_column_end = sym.decl_column;
+      // Ensure callee symbol is recorded
+      RecordSymbol(callee_decl);
+
+      CallEdgeRow e;
+      e.caller_usr  = current_caller_usr_;
+      e.callee_usr  = callee_usr;
+      e.edge_type   = "direct";
+      auto loc = call->getBeginLoc();
+      e.call_line   = clang::FullSourceLoc(loc, sm).getSpellingLineNumber();
+      e.call_column = clang::FullSourceLoc(loc, sm).getSpellingColumnNumber();
+      e.call_file_path = GetFilePath(sm, loc);
+      RecordRefFile(e.call_file_path);
+      edges_->push_back(e);
+    } else {
+      // 间接调用：普通函数指针 或 成员函数指针（obj.*fp / ptr->*fp）
+      auto possible = function_pointer::GetPossibleCallees(call, ctx_, &fp_map_);
+      for (const auto& callee_usr : possible) {
+        CallEdgeRow e;
+        e.caller_usr = current_caller_usr_;
+        e.callee_usr = callee_usr;
+        e.edge_type  = "via_function_pointer";
+        auto loc = call->getBeginLoc();
+        e.call_line   = clang::FullSourceLoc(loc, sm).getSpellingLineNumber();
+        e.call_column = clang::FullSourceLoc(loc, sm).getSpellingColumnNumber();
+        e.call_file_path = GetFilePath(sm, loc);
+        RecordRefFile(e.call_file_path);
+        edges_->push_back(e);
       }
     }
-    if (D->isThisDeclarationADefinition()) {
-      SourceLocation start = D->getBeginLoc(), end = D->getEndLoc();
-      sym.def_line = GetLine(SM, start);
-      sym.def_column = GetColumn(SM, start);
-      sym.def_line_end = GetLine(SM, end);
-      sym.def_column_end = GetColumn(SM, end);
-      sym.def_in_tu_file = (SM.getFileID(start) == mainFID);
+    return true;
+  }
+
+  // CXXMemberCallExpr 是 CallExpr 的子类，通过 VisitCallExpr 已处理大多数情况。
+  // 但对于通过成员函数指针的调用（obj.*fp 或 ptr->*fp），Clang 将其表示为
+  // CXXMemberCallExpr，其 getDirectCallee() 返回 nullptr。
+  // VisitCallExpr 已统一处理 getDirectCallee()==nullptr 的 indirect 路径，
+  // 因此这里不需要额外 VisitCXXMemberCallExpr。
+  // RecursiveASTVisitor 会对 CXXMemberCallExpr 节点调用 VisitCallExpr。
+
+  bool VisitCXXConstructExpr(clang::CXXConstructExpr* ce) {
+    if (current_caller_usr_.empty()) return true;
+    auto* ctor = ce->getConstructor();
+    if (!ctor) return true;
+    std::string callee_usr = GenUSR(ctor);
+    if (callee_usr.empty()) return true;
+    RecordSymbol(ctor);
+    CallEdgeRow e;
+    e.caller_usr = current_caller_usr_;
+    e.callee_usr = callee_usr;
+    e.edge_type  = "direct";
+    auto loc = ce->getBeginLoc();
+    e.call_line   = clang::FullSourceLoc(loc, sm_).getSpellingLineNumber();
+    e.call_column = clang::FullSourceLoc(loc, sm_).getSpellingColumnNumber();
+    e.call_file_path = GetFilePath(sm_, loc);
+    RecordRefFile(e.call_file_path);
+    edges_->push_back(e);
+    return true;
+  }
+
+private:
+  /// 记录函数符号。当声明和定义分离时（头文件声明 + .cpp 定义），
+  /// RecursiveASTVisitor 会先访问头文件中的声明，再访问 .cpp 中的定义。
+  /// 若仅用 seen_usrs_ 去重，定义的 def_* 信息会被跳过，导致 def_line=0。
+  /// 修复：已见过的 USR 若本次是定义，则回填 def_* 字段到已存储的 SymbolRow。
+  void RecordSymbol(const clang::FunctionDecl* fd) {
+    std::string usr = GenUSR(fd);
+    if (usr.empty()) return;
+
+    // 若已记录过此 USR，检查是否需要回填定义位置
+    auto it = usr_index_.find(usr);
+    if (it != usr_index_.end()) {
+      // 已存在：仅当本次是定义且之前未记录定义位置时，回填 def_* 字段
+      if (fd->isThisDeclarationADefinition()) {
+        SymbolRow& existing = (*symbols_)[it->second];
+        if (existing.def_line == 0) {
+          auto li = GetLocInfo(sm_, fd->getSourceRange());
+          existing.def_file_path = li.file;
+          existing.def_line      = li.line;
+          existing.def_column    = li.col;
+          existing.def_line_end  = li.end_line;
+          existing.def_col_end   = li.end_col;
+          RecordRefFile(li.file);
+        }
+      }
+      return;
     }
-    return sym;
-  }
-};
 
-class CallGraphConsumer : public ASTConsumer {
- public:
-  CallGraphConsumer(ASTContext* ctx, CallGraphOutput* out)
-      : ctx_(ctx), out_(out) {}
-  void HandleTranslationUnit(ASTContext& ctx) override {
-    CallGraphVisitor visitor(ctx_, out_);
-    visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-  }
- private:
-  ASTContext* ctx_;
-  CallGraphOutput* out_;
-};
+    // 首次见到此 USR，记录完整符号信息
+    size_t idx = symbols_->size();
+    usr_index_[usr] = idx;
 
-class CallGraphAction : public ASTFrontendAction {
- public:
-  explicit CallGraphAction(CallGraphOutput* out) : out_(out) {}
-  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance& CI,
-                                                 StringRef) override {
-    return std::make_unique<CallGraphConsumer>(&CI.getASTContext(), out_);
-  }
- private:
-  CallGraphOutput* out_;
-};
+    SymbolRow r;
+    r.usr  = usr;
+    r.name = fd->getNameAsString();
+    r.qualified_name = fd->getQualifiedNameAsString();
+    r.kind = SymbolKind(fd);
 
-class CallGraphActionFactory : public tooling::FrontendActionFactory {
- public:
-  explicit CallGraphActionFactory(CallGraphOutput* out) : out_(out) {}
-  std::unique_ptr<FrontendAction> create() override {
-    return std::make_unique<CallGraphAction>(out_);
+    // 定义位置
+    if (fd->isThisDeclarationADefinition()) {
+      auto li = GetLocInfo(sm_, fd->getSourceRange());
+      r.def_file_path = li.file;
+      r.def_line      = li.line;
+      r.def_column    = li.col;
+      r.def_line_end  = li.end_line;
+      r.def_col_end   = li.end_col;
+      RecordRefFile(li.file);
+    }
+    // 声明位置（遍历其他 redecl 取第一个有效位置）
+    for (auto* redecl : fd->redecls()) {
+      if (redecl == fd) continue;
+      auto li = GetLocInfo(sm_, redecl->getSourceRange());
+      if (li.file.empty()) continue;
+      r.decl_file_path = li.file;
+      r.decl_line      = li.line;
+      r.decl_column    = li.col;
+      r.decl_line_end  = li.end_line;
+      r.decl_col_end   = li.end_col;
+      RecordRefFile(li.file);
+      break;
+    }
+    symbols_->push_back(r);
   }
- private:
-  CallGraphOutput* out_;
+
+  void RecordRefFile(const std::string& path) {
+    if (path.empty()) return;
+    if (ref_files_path_set_.insert(path).second)
+      ref_files_->push_back(path);
+  }
+
+  clang::ASTContext& ctx_;
+  const clang::SourceManager& sm_;
+  std::vector<SymbolRow>* symbols_;
+  std::vector<CallEdgeRow>* edges_;
+  std::vector<std::string>* ref_files_;
+  const std::unordered_map<std::string, std::vector<std::string>>& fp_map_;
+  std::string current_caller_usr_;
+  std::unordered_map<std::string, size_t> usr_index_;  // USR → symbols_ 中的索引
+  std::unordered_set<std::string> ref_files_path_set_;
 };
 
 }  // namespace
 
-void RunCallGraphAnalysis(clang::ASTContext& ctx, CallGraphOutput* out) {
-  if (!out) return;
-  CallGraphVisitor visitor(&ctx, out);
-  visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+void Analyze(clang::ASTContext& ctx,
+             std::vector<SymbolRow>* symbols,
+             std::vector<CallEdgeRow>* call_edges,
+             std::vector<std::string>* referenced_files) {
+  // Phase 0: collect function pointer assignments
+  std::unordered_map<std::string, std::vector<std::string>> fp_map;
+  function_pointer::CollectAssignments(ctx, &fp_map);
+
+  CallGraphVisitor v(ctx, symbols, call_edges, referenced_files, fp_map);
+  v.TraverseDecl(ctx.getTranslationUnitDecl());
 }
 
-bool RunCallGraphOnTU(const TUEntry& tu, CallGraphOutput* out) {
-  if (!out) {
-    LogError("RunCallGraphOnTU: out is null");
-    return false;
-  }
-  std::string dir = tu.working_directory;
-  if (dir.empty()) {
-    size_t pos = tu.source_file.find_last_of("/\\");
-    dir = (pos != std::string::npos) ? tu.source_file.substr(0, pos + 1) : ".";
-  }
-  dir = NormalizePath(dir);
-  if (dir.empty()) dir = ".";
-
-  auto db = std::make_unique<tooling::FixedCompilationDatabase>(
-      dir, llvm::ArrayRef<std::string>(tu.compile_args));
-  tooling::ClangTool tool(*db, llvm::ArrayRef<std::string>(tu.source_file));
-
-  ClangIncludeEnv env = GetClangIncludeEnv();
-  std::vector<std::string> extra;
-  if (!env.resource_dir.empty()) {
-    extra.push_back("-resource-dir");
-    extra.push_back(env.resource_dir);
-  }
-  for (const std::string& p : env.system_include_paths) {
-    extra.push_back("-isystem");
-    extra.push_back(p);
-  }
-  if (!extra.empty())
-    tool.appendArgumentsAdjuster(
-        tooling::getInsertArgumentAdjuster(extra, tooling::ArgumentInsertPosition::BEGIN));
-
-  CallGraphActionFactory factory(out);
-  int ret = tool.run(&factory);
-  if (ret != 0) {
-    LogError("RunCallGraphOnTU: ClangTool run returned %d for %s", ret, tu.source_file.c_str());
-    return false;
-  }
-  LogInfo("RunCallGraphOnTU: %zu symbols, %zu edges for %s",
-          out->symbols.size(), out->edges.size(), tu.source_file.c_str());
-  return true;
-}
-
-void* CreateCallGraphAction(CallGraphOutput* out) {
-  if (!out) return nullptr;
-  return new CallGraphAction(out);
-}
-
-#endif  // CODEXRAY_HAVE_CLANG
-
+}  // namespace call_graph
 }  // namespace codexray
+
+#else
+namespace codexray { namespace call_graph {} }
+#endif  // CODEXRAY_HAVE_CLANG

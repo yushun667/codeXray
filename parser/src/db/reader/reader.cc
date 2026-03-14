@@ -68,6 +68,18 @@ static int64_t ResolveSymbolId(sqlite3* db,
     sqlite3_finalize(s);
     if (id) return id;
 
+    // 兜底：尝试按 decl_file_id 查找（处理 def_file_id 为空的情况）
+    sqlite3_stmt* sd = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT s.id FROM symbol s JOIN file f ON s.decl_file_id=f.id"
+        " WHERE s.name=? AND f.path LIKE ? LIMIT 1", -1, &sd, nullptr);
+    BindText(sd, 1, usr_or_name);
+    BindText(sd, 2, "%" + file_path + "%");
+    int64_t id_decl = 0;
+    if (sqlite3_step(sd) == SQLITE_ROW) id_decl = sqlite3_column_int64(sd, 0);
+    sqlite3_finalize(sd);
+    if (id_decl) return id_decl;
+
     // Fallback: def_file_id 为 NULL 时，通过 USR 中包含的文件名匹配
     // 许多匿名命名空间的方法其 USR 以文件名开头（如 "c:IntrinsicEmitter.cpp@..."）
     // 提取 file_path 的基本文件名用于 LIKE 匹配 USR
@@ -98,13 +110,20 @@ static int64_t ResolveSymbolId(sqlite3* db,
   return id;
 }
 
+/// 加载符号节点信息。使用 COALESCE 兜底：当 def_* 为 0/NULL 时回退到 decl_* 字段，
+/// 确保即使解析器未正确记录定义位置，也能从声明位置获取可用的跳转目标。
 static QueryNode LoadSymbolNode(sqlite3* db, int64_t sym_id,
                                  std::unordered_map<int64_t, std::string>& fc) {
   QueryNode n{};
   sqlite3_stmt* s = nullptr;
   sqlite3_prepare_v2(db,
-      "SELECT id,usr,name,qualified_name,kind,def_file_id,def_line,def_column,"
-      "def_line_end,def_col_end FROM symbol WHERE id=?", -1, &s, nullptr);
+      "SELECT id, usr, name, qualified_name, kind,"
+      " COALESCE(NULLIF(def_file_id,0), decl_file_id) AS file_id,"
+      " COALESCE(NULLIF(def_line,0), decl_line) AS line,"
+      " COALESCE(NULLIF(def_column,0), decl_column) AS col,"
+      " COALESCE(NULLIF(def_line_end,0), decl_line_end) AS line_end,"
+      " COALESCE(NULLIF(def_col_end,0), decl_col_end) AS col_end"
+      " FROM symbol WHERE id=?", -1, &s, nullptr);
   sqlite3_bind_int64(s, 1, sym_id);
   if (sqlite3_step(s) == SQLITE_ROW) {
     n.id             = sqlite3_column_int64(s, 0);
@@ -186,17 +205,19 @@ bool IsFileParsed(sqlite3* db, int64_t project_id, int64_t file_id) {
 
 // ─── symbol by location ───────────────────────────────────────────────────────
 
+/// 按文件+行号查询符号。优先查 def_file_id 定义位置，
+/// 若无结果则回退查 decl_file_id 声明位置（兜底旧数据中 def_file_id 为空的情况）。
 std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id,
                                                   int line, int column) {
   std::vector<SymbolRow> result;
-  // Best match: definition range [def_line, def_line_end] contains line
-  const char* sql =
+  // 优先：按定义位置范围 [def_line, def_line_end] 查询
+  const char* sql_def =
       "SELECT usr, name, qualified_name, kind, def_file_id, def_line, def_column,"
       " def_line_end, def_col_end FROM symbol"
       " WHERE def_file_id=? AND def_line <= ? AND def_line_end >= ?"
       " ORDER BY (def_line_end - def_line) ASC LIMIT 5";
   sqlite3_stmt* s = nullptr;
-  sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+  sqlite3_prepare_v2(db, sql_def, -1, &s, nullptr);
   sqlite3_bind_int64(s, 1, file_id);
   sqlite3_bind_int(s, 2, line);
   sqlite3_bind_int(s, 3, line);
@@ -214,6 +235,35 @@ std::vector<SymbolRow> QuerySymbolsByFileAndLine(sqlite3* db, int64_t file_id,
     result.push_back(r);
   }
   sqlite3_finalize(s);
+
+  // 兜底：若按定义位置未找到，尝试按声明位置查找（处理 def_file_id 为空的旧数据）
+  if (result.empty()) {
+    const char* sql_decl =
+        "SELECT usr, name, qualified_name, kind, decl_file_id, decl_line, decl_column,"
+        " decl_line_end, decl_col_end FROM symbol"
+        " WHERE decl_file_id=? AND decl_line <= ? AND decl_line_end >= ?"
+        " ORDER BY (decl_line_end - decl_line) ASC LIMIT 5";
+    sqlite3_stmt* s2 = nullptr;
+    sqlite3_prepare_v2(db, sql_decl, -1, &s2, nullptr);
+    sqlite3_bind_int64(s2, 1, file_id);
+    sqlite3_bind_int(s2, 2, line);
+    sqlite3_bind_int(s2, 3, line);
+    while (sqlite3_step(s2) == SQLITE_ROW) {
+      SymbolRow r;
+      r.usr            = ColText(s2, 0);
+      r.name           = ColText(s2, 1);
+      r.qualified_name = ColText(s2, 2);
+      r.kind           = ColText(s2, 3);
+      // 使用 decl 字段填充 def 字段，使上层调用者无需区分
+      r.def_file_id    = sqlite3_column_int64(s2, 4);
+      r.def_line       = sqlite3_column_int(s2, 5);
+      r.def_column     = sqlite3_column_int(s2, 6);
+      r.def_line_end   = sqlite3_column_int(s2, 7);
+      r.def_col_end    = sqlite3_column_int(s2, 8);
+      result.push_back(r);
+    }
+    sqlite3_finalize(s2);
+  }
   return result;
 }
 
