@@ -61,6 +61,8 @@
 | 图节点 | GraphCore | 自定义节点 GraphNode | 左侧 Handle（target）、右侧 Handle（source）；框内多行显示 label，悬停 title 显示全文；点击节点 postMessage(gotoSymbol) 跳转代码 |
 | 边 | GraphCore | 边 | smoothstep 折线、圆角、箭头（ArrowClosed）；同 (source,target) 去重，总数上限 2500 |
 | 查询根节点高亮 | GraphCore | 节点样式 | 查询入口函数节点使用橙色底色（`rgb(193,125,55)`）区分，3 级回退匹配策略（querySymbol 精确 → label 首行 → 拓扑度数最高） |
+| 查询根节点居中布局 | graphLayout.ts | 布局算法 | 查询入口节点居中放置，调用者（callers）在左侧、被调用者（callees）在右侧；通过 BFS 计算有向层级（负层级=调用者侧，0=根，正层级=被调用者侧），用 dagre rank 约束强制分层 |
+| 节点碰撞检测 | graphLayout.ts | 布局算法 | dagre 布局后执行碰撞检测，检查节点包围盒是否重叠，沿最小穿透方向推开重叠节点（最多迭代 10 轮）；水平最小间距 20px，垂直最小间距 20px |
 | 撤销/恢复 | GraphCore | 键盘快捷键 | Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 或 Ctrl/Cmd+Y 恢复；基于快照栈（`useGraphHistory`），最多保存 50 步历史；在删除节点、拖拽移动、graphAppend 追加前保存快照；initGraph 初始化时清空历史 |
 | 节点右键菜单 | GraphContextMenu | 浮层菜单 | 固定在鼠标位置；项「继续查询前置节点」「继续查询后置节点」 |
 

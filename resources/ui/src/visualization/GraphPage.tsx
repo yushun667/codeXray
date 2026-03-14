@@ -60,20 +60,6 @@ function adaptGraph(
   }
 }
 
-function adaptAndLayout(
-  graphType: GraphType,
-  data: GraphData
-): { nodes: Node<FlowNodeData>[]; edges: Edge[]; edgesTruncated?: number } {
-  let { nodes, edges } = adaptGraph(graphType, data);
-  const { edges: limitedEdges, originalCount } = deduplicateAndLimitEdges(edges);
-  edges = limitedEdges;
-  const edgesTruncated = originalCount > edges.length ? originalCount : undefined;
-  if (nodes.length > 0) {
-    nodes = getLayoutedElements(nodes, edges, graphType);
-  }
-  return { nodes, edges, edgesTruncated };
-}
-
 /**
  * 删除指定节点后清理孤立节点：
  * 1. 移除 removeIds 中的节点及其关联边
@@ -176,6 +162,8 @@ export function GraphPage() {
 
   /** 查询根节点 ID 集合：首次 initGraph 时记录，用于孤立节点清理 */
   const rootNodeIdsRef = useRef<Set<string>>(new Set());
+  /** 查询入口节点 ID 集合：用于布局时"根居中"（仅查询入口，非全部初始节点） */
+  const queryRootIdsRef = useRef<Set<string>>(new Set());
 
   /** 撤销/恢复历史栈 */
   const { pushSnapshot, undo, redo, clearHistory } = useGraphHistory();
@@ -256,34 +244,33 @@ export function GraphPage() {
         setGraphType(type);
         clearHistory(); // 初始化时清空撤销/恢复历史
         if (m.nodes?.length || m.edges?.length) {
-          const { nodes: n, edges: e, edgesTruncated: trunc } = adaptAndLayout(type, {
+          // Phase 1: 适配数据（不含布局）
+          const { nodes: rawN, edges: rawE } = adaptGraph(type, {
             nodes: m.nodes ?? [],
             edges: m.edges ?? [],
           });
-          // 记录初始节点 ID 作为查询根节点（首次设置；后续 graphAppend 不覆盖）
-          if (rootNodeIdsRef.current.size === 0) {
-            for (const nd of n) rootNodeIdsRef.current.add(nd.id);
-          }
-          // 标记查询入口节点（右键选中的那个函数），用于醒目颜色区分
-          // 策略：1) querySymbol name 精确匹配  2) label 首行匹配  3) 拓扑分析（入度+出度最高的节点）
+
+          // Phase 2: 识别查询入口节点（用于布局居中 + 高亮）
+          // 策略：1) querySymbol name 精确匹配  2) label 首行匹配  3) 拓扑分析（度数最高）
           const qSym = (m as { querySymbol?: string }).querySymbol;
+          const queryRootIds = new Set<string>();
           let rootFound = false;
           if (qSym) {
-            // 精确匹配 name
-            for (const nd of n) {
+            for (const nd of rawN) {
               const d = nd.data as FlowNodeData;
               if (d.name === qSym) {
+                queryRootIds.add(nd.id);
                 d.isRoot = true;
                 rootFound = true;
                 break;
               }
             }
-            // 回退：label 首行匹配
             if (!rootFound) {
-              for (const nd of n) {
+              for (const nd of rawN) {
                 const d = nd.data as FlowNodeData;
                 const firstLine = d.label.split('\n')[0] ?? '';
                 if (firstLine === qSym || firstLine.endsWith('::' + qSym)) {
+                  queryRootIds.add(nd.id);
                   d.isRoot = true;
                   rootFound = true;
                   break;
@@ -291,25 +278,40 @@ export function GraphPage() {
               }
             }
           }
-          // 终极回退：无 querySymbol 或匹配失败 → 拓扑分析，选度数最高的节点
-          if (!rootFound && n.length > 0 && e.length > 0) {
+          if (!rootFound && rawN.length > 0 && rawE.length > 0) {
             const degree = new Map<string, number>();
-            for (const nd of n) degree.set(nd.id, 0);
-            for (const edge of e) {
+            for (const nd of rawN) degree.set(nd.id, 0);
+            for (const edge of rawE) {
               degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
               degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
             }
             let maxDeg = 0;
-            let maxId = n[0].id;
+            let maxId = rawN[0].id;
             for (const [id, deg] of degree) {
               if (deg > maxDeg) { maxDeg = deg; maxId = id; }
             }
-            const rootNd = n.find((nd) => nd.id === maxId);
+            queryRootIds.add(maxId);
+            const rootNd = rawN.find((nd) => nd.id === maxId);
             if (rootNd) (rootNd.data as FlowNodeData).isRoot = true;
           }
+
+          // Phase 3: 去重/限流边 + 布局（传入查询根节点，使其居中）
+          const { edges: limitedE, originalCount } = deduplicateAndLimitEdges(rawE);
+          const edgesTrunc = originalCount > limitedE.length ? originalCount : undefined;
+          const n = rawN.length > 0
+            ? getLayoutedElements(rawN, limitedE, type, queryRootIds)
+            : rawN;
+
+          // 记录初始节点 ID 作为查询根节点（首次设置；后续 graphAppend 不覆盖）
+          if (rootNodeIdsRef.current.size === 0) {
+            for (const nd of n) rootNodeIdsRef.current.add(nd.id);
+          }
+          // 保存查询入口节点 ID 供 graphAppend 重布局使用
+          queryRootIdsRef.current = queryRootIds;
+
           setNodes(n);
-          setEdges(e);
-          setEdgesTruncated(trunc ?? null);
+          setEdges(limitedE);
+          setEdgesTruncated(edgesTrunc ?? null);
         }
         setReady(true);
       }
@@ -329,7 +331,7 @@ export function GraphPage() {
               );
               const { edges: limitedE, originalCount } = deduplicateAndLimitEdges(mergedE);
               if (originalCount > limitedE.length) setEdgesTruncated(originalCount);
-              const laid = getLayoutedElements(mergedN, limitedE, curType);
+              const laid = getLayoutedElements(mergedN, limitedE, curType, queryRootIdsRef.current);
               queueMicrotask(() => setNodes(laid));
               return limitedE;
             });
