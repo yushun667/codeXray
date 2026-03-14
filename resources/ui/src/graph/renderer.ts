@@ -74,6 +74,8 @@ export class GraphRenderer {
   private _collapsedChildren: Map<string, Set<string>> = new Map();
   /** 已折叠的节点 ID 集合 */
   private _collapsedNodes: Set<string> = new Set();
+  /** 已删除节点的 raw 数据备份，供 undo 恢复时 _nodeStyleMapper 使用 */
+  private _rawBackup: Map<string, GraphNode> = new Map();
 
   /**
    * 构造函数
@@ -340,9 +342,13 @@ export class GraphRenderer {
       return;
     }
 
-    // 同步内部状态
+    // 同步内部状态（备份 raw 数据供 undo 恢复时使用）
     this._nodes = this._nodes.filter((n) => !removeSet.has(n.id));
-    for (const id of ids) this._nodeMap.delete(id);
+    for (const id of ids) {
+      const internal = this._nodeMap.get(id);
+      if (internal) this._rawBackup.set(id, internal.raw);
+      this._nodeMap.delete(id);
+    }
     this._edges = this._edges.filter((e) => {
       const src = e.caller || e.source || '';
       const tgt = e.callee || e.target || '';
@@ -545,13 +551,14 @@ export class GraphRenderer {
    * history 插件跟踪 addData/removeNodeData/removeEdgeData/updateNodeData 等操作。
    * undo 后需要同步 renderer 内部状态以保持一致。
    */
-  undo(): void {
+  async undo(): Promise<void> {
     if (!this._graph) return;
     try {
       const history = this._graph.getPluginInstance('history') as any;
       if (history?.undo) {
         history.undo();
         this._syncInternalStateFromGraph();
+        await this._graph.draw();
       }
     } catch { /* ignore */ }
   }
@@ -560,13 +567,14 @@ export class GraphRenderer {
    * 重做上一步撤销的操作（通过 G6 history 插件）。
    * redo 后需要同步 renderer 内部状态以保持一致。
    */
-  redo(): void {
+  async redo(): Promise<void> {
     if (!this._graph) return;
     try {
       const history = this._graph.getPluginInstance('history') as any;
       if (history?.redo) {
         history.redo();
         this._syncInternalStateFromGraph();
+        await this._graph.draw();
       }
     } catch { /* ignore */ }
   }
@@ -748,11 +756,13 @@ export class GraphRenderer {
           newNodeMap.set(id, existing);
           newNodes.push(existing.raw);
         } else {
-          // undo 恢复的节点：从 G6 data 中尝试提取 raw
+          // undo 恢复的节点：依次从 G6 data、_rawBackup 中提取 raw
           const rawFromData = (nd.data as any)?.raw as GraphNode | undefined;
-          if (rawFromData) {
-            newNodeMap.set(id, { raw: rawFromData });
-            newNodes.push(rawFromData);
+          const raw = rawFromData ?? this._rawBackup.get(id);
+          if (raw) {
+            newNodeMap.set(id, { raw });
+            newNodes.push(raw);
+            this._rawBackup.delete(id);
           }
         }
       }
@@ -909,7 +919,9 @@ export class GraphRenderer {
   private _nodeStyleMapper(d: any): Record<string, unknown> {
     const id = String(d.id);
     const internal = this._nodeMap.get(id);
-    const raw = internal?.raw;
+    const raw = internal?.raw
+      ?? this._rawBackup.get(id)
+      ?? (d.data as any)?.raw as GraphNode | undefined;
     const displayLabel = raw ? buildDisplayLabel(raw) : id;
     const isRoot = id === this._rootId;
     const nodeWidth = calcNodeWidth(displayLabel);
