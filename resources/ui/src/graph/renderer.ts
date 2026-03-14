@@ -706,12 +706,26 @@ export class GraphRenderer {
   /**
    * 动态启用/禁用 hover-activate 行为。
    * 路径高亮激活期间需禁用，否则 pointer-leave 会清除 pathGlow/dimmed 状态。
+   * 使用 setBehaviors 彻底添加/移除行为，比 updateBehavior 更可靠。
    */
   setHoverActivateEnabled(enabled: boolean): void {
     if (!this._graph) return;
     try {
-      this._graph.updateBehavior({ key: 'hover-activate', enable: enabled });
-    } catch { /* ignore - behavior might not exist */ }
+      this._graph.setBehaviors((behaviors: any[]) => {
+        const filtered = behaviors.filter(
+          (b: any) => !(typeof b === 'object' && b.key === 'hover-activate'),
+        );
+        if (enabled) {
+          filtered.push({
+            type: 'hover-activate',
+            key: 'hover-activate',
+            degree: 1,
+            direction: 'both',
+          });
+        }
+        return filtered;
+      });
+    } catch { /* ignore */ }
   }
 
   /** 销毁图实例并清理资源 */
@@ -860,12 +874,15 @@ export class GraphRenderer {
       },
       // 滚轮缩放
       'zoom-canvas',
-      // Shift+左键 = 多选（追加选中）
+      // Shift+左键 = 多选（追加选中）；必须设 enable 为 Shift 检测函数，
+      // 否则 click-select 即使 trigger=['shift'] 也会在普通点击时异步
+      // 调用 setElementState 覆盖 pathGlow/dimmed 状态
       {
         type: 'click-select',
         key: 'click-select',
         multiple: true,
         trigger: ['shift'],
+        enable: (event: Record<string, unknown>) => !!(event as any).shiftKey,
       },
       // 左键拖空白 = 框选（仅画布空白处且非右键时触发）
       {

@@ -40,13 +40,19 @@ export function bindInteractions(
   // ── 单击节点：badge 区域→折叠/展开，其他区域→路径高亮 ──
   const onClick = async (e: any) => {
     const id = extractNodeId(e);
+    console.log('[interactions] node:click, id:', id, 'event target:', e.target);
     if (!id) return;
 
-    if (renderer.hasCallees(id) && isClickOnBadge(e, graph, renderer, id)) {
-      await renderer.toggleCollapse(id);
-      return;
+    if (renderer.hasCallees(id)) {
+      const onBadge = isClickOnBadge(e, graph, renderer, id);
+      console.log('[interactions] hasCallees:', true, 'onBadge:', onBadge);
+      if (onBadge) {
+        await renderer.toggleCollapse(id);
+        return;
+      }
     }
 
+    console.log('[interactions] calling highlightPath for', id);
     await highlightPath(renderer, id);
   };
   graph.on('node:click', onClick);

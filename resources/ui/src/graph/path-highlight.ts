@@ -67,15 +67,26 @@ const PULSE_INTERVAL = 600;
  */
 export async function highlightPath(renderer: GraphRenderer, targetId: string): Promise<void> {
   const graph = renderer.getGraph();
-  if (!graph) return;
+  if (!graph) {
+    console.warn('[path-highlight] no graph instance');
+    return;
+  }
+
+  console.log('[path-highlight] highlightPath called, target:', targetId);
 
   // 先清除已有高亮
   await clearHighlight(renderer);
 
   const rootId = renderer.getRootId();
   const edges = renderer.getAllEdges();
+  console.log('[path-highlight] rootId:', rootId, 'edges count:', edges.length);
+
   const path = bfsPath(rootId, targetId, edges);
-  if (!path || path.length === 0) return;
+  if (!path || path.length === 0) {
+    console.warn('[path-highlight] no path found from', rootId, 'to', targetId);
+    return;
+  }
+  console.log('[path-highlight] path found:', path);
 
   // 构建路径节点集合
   const pathNodeSet = new Set(path);
@@ -87,29 +98,35 @@ export async function highlightPath(renderer: GraphRenderer, targetId: string): 
     pathEdgeKeys.add(`${path[i + 1]}->${path[i]}`);
   }
 
-  // 为所有节点分配状态
-  const states: Record<string, string[]> = {};
+  // 禁用 hover-activate 和 click-select，防止异步状态覆盖
+  renderer.setHoverActivateEnabled(false);
+
+  // 先对节点设状态，再对边设状态（分开调用更可靠）
+  const nodeStates: Record<string, string[]> = {};
   for (const id of renderer.getAllNodeIds()) {
-    states[id] = pathNodeSet.has(id) ? ['pathGlow'] : ['dimmed'];
+    nodeStates[id] = pathNodeSet.has(id) ? ['pathGlow'] : ['dimmed'];
   }
 
-  // 为所有边分配状态，并收集路径边 ID
+  const edgeStates: Record<string, string[]> = {};
   const pathEdgeIds: string[] = [];
   for (const ed of graph.getEdgeData()) {
     const src = String(ed.source);
     const tgt = String(ed.target);
     const eid = String(ed.id);
     const onPath = pathEdgeKeys.has(`${src}->${tgt}`) || pathEdgeKeys.has(`${tgt}->${src}`);
-    states[eid] = onPath ? ['pathGlow'] : ['dimmed'];
+    edgeStates[eid] = onPath ? ['pathGlow'] : ['dimmed'];
     if (onPath) pathEdgeIds.push(eid);
   }
 
-  // 必须在 setElementState 之前禁用 hover-activate，
-  // 否则 pointer-leave 事件会立即清除刚设置的状态
-  renderer.setHoverActivateEnabled(false);
+  console.log('[path-highlight] setting states: pathNodes:', path.length,
+    'pathEdges:', pathEdgeIds.length,
+    'totalNodes:', Object.keys(nodeStates).length,
+    'totalEdges:', Object.keys(edgeStates).length);
 
   try {
-    await graph.setElementState(states);
+    await graph.setElementState(nodeStates);
+    await graph.setElementState(edgeStates);
+    console.log('[path-highlight] states set successfully');
   } catch (err) {
     console.warn('[path-highlight] setElementState failed:', err);
     renderer.setHoverActivateEnabled(true);
@@ -122,6 +139,7 @@ export async function highlightPath(renderer: GraphRenderer, targetId: string): 
     _activeRenderer = renderer;
     _pulsePhase = 0;
     _pulseTimer = setInterval(pulseStep, PULSE_INTERVAL);
+    console.log('[path-highlight] pulse animation started');
   }
 }
 
