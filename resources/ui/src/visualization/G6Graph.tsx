@@ -181,6 +181,8 @@ export interface G6GraphProps {
   ) => void;
   /** 节点数量变化回调（用于外部判断空/非空状态） */
   onNodeCountChange?: (count: number) => void;
+  /** G6 Graph 实例创建完成回调（用于应用缓存的待初始化数据） */
+  onG6Ready?: () => void;
 }
 
 /** G6Graph 暴露给父组件的命令式操作接口 */
@@ -212,7 +214,7 @@ export interface G6GraphHandle {
  */
 export const G6Graph = forwardRef<G6GraphHandle, G6GraphProps>(
   function G6Graph(
-    { onNodeContextMenu, onSelectionContextMenu, onNodeCountChange },
+    { onNodeContextMenu, onSelectionContextMenu, onNodeCountChange, onG6Ready },
     ref,
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -234,6 +236,9 @@ export const G6Graph = forwardRef<G6GraphHandle, G6GraphProps>(
 
       // 初始化渲染（空图）
       graph.render();
+
+      // 通知父组件 G6 Graph 实例已就绪，可应用缓存数据
+      onG6Ready?.();
 
       // ─── 事件绑定 ───
 

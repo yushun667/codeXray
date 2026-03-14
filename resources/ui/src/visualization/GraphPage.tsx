@@ -155,6 +155,11 @@ export function GraphPage() {
   const queryRootIdsRef = useRef<Set<string>>(new Set());
   /** 当前图类型（ref 版本避免 useEffect 闭包过时） */
   const graphTypeRef = useRef<GraphType>('call_graph');
+  /** 缓存待初始化的图数据（G6Graph 尚未挂载时暂存） */
+  const pendingDataRef = useRef<{
+    data: { nodes: import('@antv/g6').NodeData[]; edges: import('@antv/g6').EdgeData[] };
+    rootIds: Set<string>;
+  } | null>(null);
 
   // ─── 消息处理 ───
   useEffect(() => {
@@ -193,11 +198,20 @@ export function GraphPage() {
             deduplicateAndLimitEdges(g6Data.edges);
           setEdgesTruncated(truncated ? originalCount : null);
 
-          // 5. 初始化图
-          g6Ref.current?.setData(
-            { nodes: g6Data.nodes, edges: limitedE },
+          // 5. 同步更新节点数量（避免异步 render 完成前显示"空结果"）
+          setNodeCount(g6Data.nodes.length);
+
+          // 6. 初始化图（如果 G6Graph 已挂载则直接设置，否则缓存等挂载后应用）
+          const initPayload = {
+            data: { nodes: g6Data.nodes, edges: limitedE },
             rootIds,
-          );
+          };
+          if (g6Ref.current) {
+            g6Ref.current.setData(initPayload.data, initPayload.rootIds);
+            pendingDataRef.current = null;
+          } else {
+            pendingDataRef.current = initPayload;
+          }
         }
         setReady(true);
       }
@@ -250,6 +264,15 @@ export function GraphPage() {
   /** 节点数量变化回调 */
   const handleNodeCountChange = useCallback((count: number) => {
     setNodeCount(count);
+  }, []);
+
+  /** G6Graph 挂载完成回调：如果有缓存的待初始化数据，立即应用 */
+  const handleG6Ready = useCallback(() => {
+    const pending = pendingDataRef.current;
+    if (pending && g6Ref.current) {
+      g6Ref.current.setData(pending.data, pending.rootIds);
+      pendingDataRef.current = null;
+    }
   }, []);
 
   // ─── 渲染 ───
@@ -327,6 +350,7 @@ export function GraphPage() {
       <div style={{ flex: 1, minHeight: 0 }}>
         <G6Graph
           ref={g6Ref}
+          onG6Ready={handleG6Ready}
           onNodeContextMenu={(nodeId, nodeData, x, y) =>
             setContextMenu({ nodeId, nodeData, x, y })
           }
