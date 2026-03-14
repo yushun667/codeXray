@@ -114,12 +114,24 @@ export class GraphRenderer {
     this._queryDepth = queryDepth;
     this._nodeMap.clear();
     this._edgeSet.clear();
-    this._nodes = nodes;
-    this._edges = edges;
     this._collapsedChildren.clear();
     this._collapsedNodes.clear();
 
-    for (const n of nodes) {
+    // 过滤孤立节点：仅保留被边引用的节点和根节点
+    const connectedIds = new Set<string>([rootId]);
+    for (const e of edges) {
+      connectedIds.add(String(e.caller || e.source));
+      connectedIds.add(String(e.callee || e.target));
+    }
+    const filteredNodes = nodes.filter((n) => connectedIds.has(n.id));
+    if (filteredNodes.length < nodes.length) {
+      console.log('[renderer] 过滤孤立节点:', nodes.length - filteredNodes.length, '个');
+    }
+
+    this._nodes = filteredNodes;
+    this._edges = edges;
+
+    for (const n of filteredNodes) {
       this._nodeMap.set(n.id, { raw: n });
     }
     for (const e of edges) {
@@ -239,16 +251,6 @@ export class GraphRenderer {
     const perf = new PerfTimer();
     perf.mark('total');
 
-    // 去重节点
-    const addedNodes: GraphNode[] = [];
-    for (const n of newNodes) {
-      if (!this._nodeMap.has(n.id)) {
-        this._nodeMap.set(n.id, { raw: n });
-        this._nodes.push(n);
-        addedNodes.push(n);
-      }
-    }
-
     // 去重边
     const addedEdges: GraphEdge[] = [];
     for (const e of newEdges) {
@@ -257,6 +259,22 @@ export class GraphRenderer {
         this._edgeSet.add(key);
         this._edges.push(e);
         addedEdges.push(e);
+      }
+    }
+
+    // 收集新边引用的节点 ID，仅添加被边连接的节点（过滤孤立节点）
+    const newConnectedIds = new Set<string>();
+    for (const e of addedEdges) {
+      newConnectedIds.add(String(e.caller || e.source));
+      newConnectedIds.add(String(e.callee || e.target));
+    }
+
+    const addedNodes: GraphNode[] = [];
+    for (const n of newNodes) {
+      if (!this._nodeMap.has(n.id) && newConnectedIds.has(n.id)) {
+        this._nodeMap.set(n.id, { raw: n });
+        this._nodes.push(n);
+        addedNodes.push(n);
       }
     }
 
