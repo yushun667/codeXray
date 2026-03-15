@@ -1,41 +1,33 @@
 /**
- * 解析引擎 compile_commands 加载
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.3
- * 格式：https://clang.llvm.org/docs/JSONCompilationDatabase.html
+ * compile_commands.json 加载与 TU 列表生成。
+ * 设计 §3.3。
  */
-
-#ifndef CODEXRAY_PARSER_COMPILE_COMMANDS_LOAD_H_
-#define CODEXRAY_PARSER_COMPILE_COMMANDS_LOAD_H_
-
+#pragma once
 #include <string>
 #include <vector>
 
 namespace codexray {
 
 struct TUEntry {
-  std::string source_file;       // 绝对路径
-  std::vector<std::string> compile_args;
-  std::string working_directory; // 编译时工作目录（来自 compile_commands directory），供 ClangTool 使用
+  std::string source_file;  // 绝对路径
+  std::string directory;    // 工作目录
+  std::vector<std::string> arguments;  // 完整编译命令行（argv 风格）
+};
+
+struct CompileCommandsResult {
+  std::vector<TUEntry> priority;    // priority_dirs 下的 TU
+  std::vector<TUEntry> remainder;   // 其余 TU
+  std::string error;
 };
 
 /**
- * 加载 compile_commands.json，将路径展开为基于 project_root 的绝对路径。
- * path_to_cc 可为空，表示使用 project_root/compile_commands.json。
- * 失败返回空 vector（并写日志）。
+ * 加载 compile_commands.json
+ * @param json_path  JSON 文件路径
+ * @param project_root  工程根目录（用于规范化相对路径）
+ * @param priority_dirs  优先目录列表（相对 project_root），为空则所有 TU 归 priority
  */
-std::vector<TUEntry> LoadCompileCommands(const std::string& project_root,
-                                        const std::string& path_to_cc);
-
-/**
- * 按 priority_dirs（相对 project_root 的路径前缀）将 all 划分为优先 TU 与剩余 TU。
- * 若 source_file 的工程相对路径以任一 priority_dir 开头，则归入 priority，否则归入 rest。
- */
-void SplitByPriorityDirs(const std::vector<TUEntry>& all,
-                        const std::string& project_root,
-                        const std::vector<std::string>& priority_dirs,
-                        std::vector<TUEntry>* priority,
-                        std::vector<TUEntry>* rest);
+CompileCommandsResult LoadCompileCommands(const std::string& json_path,
+                                          const std::string& project_root,
+                                          const std::vector<std::string>& priority_dirs);
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_COMPILE_COMMANDS_LOAD_H_
