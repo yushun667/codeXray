@@ -247,20 +247,22 @@ int main(int argc, char* argv[]) {
       return static_cast<int>(codexray::ExitCode::kQueryFailed);
     }
 
-    // 查询用路径：与 DB 中 file.path 一致（解析时由 MakeAbsolute/NormalizePath 写入）
-    std::string query_file_path = query_opts.file_path;
-    if (!query_file_path.empty()) {
+    // 规范化路径，与解析时写入 DB 的路径形式一致（解析使用 NormalizePath/MakeAbsolute）
+    if (!query_opts.project_root.empty())
+      query_opts.project_root = codexray::NormalizePath(query_opts.project_root);
+    if (!query_opts.file_path.empty()) {
       if (!query_opts.project_root.empty())
-        query_file_path =
-            codexray::MakeAbsolute(query_opts.project_root, query_file_path);
+        query_opts.file_path =
+            codexray::MakeAbsolute(query_opts.project_root, query_opts.file_path);
       else
-        query_file_path = codexray::NormalizePath(query_file_path);
+        query_opts.file_path = codexray::NormalizePath(query_opts.file_path);
     }
 
     // Lazy parse: if target file not yet parsed, trigger on-demand parse
     if (query_opts.lazy && !query_opts.project_root.empty() &&
         !query_opts.file_path.empty()) {
-      std::string abs_path = query_file_path;
+      std::string abs_path = codexray::MakeAbsolute(
+          query_opts.project_root, query_opts.file_path);
       int64_t project_id = codexray::GetProjectId(
           conn.Get(), codexray::NormalizePath(query_opts.project_root));
       int64_t file_id = codexray::QueryFileIdByPath(conn.Get(), project_id, abs_path);
@@ -293,14 +295,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Resolve symbol from file+line if --symbol not given
-    if (query_opts.symbol.empty() && !query_file_path.empty() &&
+    if (query_opts.symbol.empty() && !query_opts.file_path.empty() &&
         query_opts.line > 0) {
       int64_t project_id = 0;
       if (!query_opts.project_root.empty())
         project_id = codexray::GetProjectId(
             conn.Get(), codexray::NormalizePath(query_opts.project_root));
       int64_t file_id = codexray::QueryFileIdByPath(
-          conn.Get(), project_id, query_file_path);
+          conn.Get(), project_id, query_opts.file_path);
       if (file_id > 0) {
         auto syms = codexray::QuerySymbolsByFileAndLine(
             conn.Get(), file_id, query_opts.line, query_opts.column);
@@ -319,24 +321,24 @@ int main(int argc, char* argv[]) {
         project_id = codexray::GetProjectId(
             conn.Get(), codexray::NormalizePath(query_opts.project_root));
       json = codexray::QuerySymbolAtLocationJson(
-          conn.Get(), project_id, query_file_path,
+          conn.Get(), project_id, query_opts.file_path,
           query_opts.line, query_opts.column);
     }
     else if (query_opts.query_type == "call_graph")
       json = codexray::QueryCallGraphJson(
-          conn.Get(), query_opts.symbol, query_file_path,
+          conn.Get(), query_opts.symbol, query_opts.file_path,
           query_opts.depth, query_opts.direction);
     else if (query_opts.query_type == "class_graph")
       json = codexray::QueryClassGraphJson(
-          conn.Get(), query_opts.symbol, query_file_path);
+          conn.Get(), query_opts.symbol, query_opts.file_path);
     else if (query_opts.query_type == "data_flow")
       json = codexray::QueryDataFlowJson(
-          conn.Get(), query_opts.symbol, query_file_path);
+          conn.Get(), query_opts.symbol, query_opts.file_path);
     else if (query_opts.query_type == "control_flow") {
       // db_dir：db 文件所在目录，用于定位 cfg/ pb 文件
       std::string db_dir = std::filesystem::path(query_opts.db_path).parent_path().string();
       json = codexray::QueryControlFlowJson(
-          conn.Get(), db_dir, query_opts.symbol, query_file_path);
+          conn.Get(), db_dir, query_opts.symbol, query_opts.file_path);
     }
     else {
       std::cerr << "Unknown query type: " << query_opts.query_type << "\n";
