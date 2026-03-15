@@ -61,4 +61,4 @@ jobs:
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_DIR="$LLVM_DIR" \
             -DClang_DIR="$Clang_DIR"
-          cmake --build . --config Release
+          cmake --build . -j$(nproc)
