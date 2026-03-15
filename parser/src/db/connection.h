@@ -1,41 +1,33 @@
 /**
- * 解析引擎 DB 模块：SQLite 连接与事务
- * 参考：doc/01-解析引擎 数据库设计 §2
+ * SQLite 数据库连接封装。
+ * 设计 §3.12：WAL 模式、foreign_keys ON、optimized PRAGMAs。
  */
-
-#ifndef CODEXRAY_PARSER_DB_CONNECTION_H_
-#define CODEXRAY_PARSER_DB_CONNECTION_H_
-
-#include <memory>
+#pragma once
+#include <sqlite3.h>
 #include <string>
-
-struct sqlite3;
 
 namespace codexray {
 
 class Connection {
- public:
-  Connection();
+public:
+  Connection() = default;
   ~Connection();
-  Connection(Connection&&) noexcept;
-  Connection& operator=(Connection&&) noexcept;
+
   Connection(const Connection&) = delete;
   Connection& operator=(const Connection&) = delete;
 
   bool Open(const std::string& path);
   void Close();
-  bool IsOpen() const { return db_ != nullptr; }
-  sqlite3* Get() const { return db_; }
 
-  bool Execute(const char* sql);
+  sqlite3* Get() const { return db_; }
+  bool IsOpen() const { return db_ != nullptr; }
+
   bool BeginTransaction();
   bool Commit();
   bool Rollback();
 
- private:
+private:
   sqlite3* db_ = nullptr;
 };
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_DB_CONNECTION_H_
