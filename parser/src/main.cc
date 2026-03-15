@@ -247,6 +247,17 @@ int main(int argc, char* argv[]) {
       return static_cast<int>(codexray::ExitCode::kQueryFailed);
     }
 
+    // 查询用文件路径：与 DB 中存储的规范化路径一致，便于 file+line 查符号
+    std::string path_for_lookup = query_opts.file_path;
+    if (!path_for_lookup.empty()) {
+      if (!query_opts.project_root.empty())
+        path_for_lookup = codexray::NormalizePath(
+            codexray::MakeAbsolute(query_opts.project_root, path_for_lookup));
+      else if (path_for_lookup[0] == '/' ||
+               (path_for_lookup.size() > 1 && path_for_lookup[1] == ':'))
+        path_for_lookup = codexray::NormalizePath(path_for_lookup);
+    }
+
     // Lazy parse: if target file not yet parsed, trigger on-demand parse
     if (query_opts.lazy && !query_opts.project_root.empty() &&
         !query_opts.file_path.empty()) {
@@ -254,7 +265,8 @@ int main(int argc, char* argv[]) {
           query_opts.project_root, query_opts.file_path);
       int64_t project_id = codexray::GetProjectId(
           conn.Get(), codexray::NormalizePath(query_opts.project_root));
-      int64_t file_id = codexray::QueryFileIdByPath(conn.Get(), project_id, abs_path);
+      int64_t file_id = codexray::QueryFileIdByPath(conn.Get(), project_id,
+                                                    path_for_lookup.empty() ? abs_path : path_for_lookup);
       if (file_id == 0 || !codexray::IsFileParsed(conn.Get(), project_id, file_id)) {
         // Use stored cc_path from project record; fall back to default
       std::string cc_path;
@@ -290,8 +302,9 @@ int main(int argc, char* argv[]) {
       if (!query_opts.project_root.empty())
         project_id = codexray::GetProjectId(
             conn.Get(), codexray::NormalizePath(query_opts.project_root));
+      const std::string& lookup_path = path_for_lookup.empty() ? query_opts.file_path : path_for_lookup;
       int64_t file_id = codexray::QueryFileIdByPath(
-          conn.Get(), project_id, query_opts.file_path);
+          conn.Get(), project_id, lookup_path);
       if (file_id > 0) {
         auto syms = codexray::QuerySymbolsByFileAndLine(
             conn.Get(), file_id, query_opts.line, query_opts.column);
@@ -300,6 +313,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::string json;
+    const std::string& file_path_for_query = path_for_lookup.empty() ? query_opts.file_path : path_for_lookup;
     if (query_opts.query_type == "symbol_at") {
       if (query_opts.file_path.empty() || query_opts.line <= 0) {
         std::cerr << "symbol_at requires --file and --line\n";
@@ -310,24 +324,24 @@ int main(int argc, char* argv[]) {
         project_id = codexray::GetProjectId(
             conn.Get(), codexray::NormalizePath(query_opts.project_root));
       json = codexray::QuerySymbolAtLocationJson(
-          conn.Get(), project_id, query_opts.file_path,
+          conn.Get(), project_id, file_path_for_query,
           query_opts.line, query_opts.column);
     }
     else if (query_opts.query_type == "call_graph")
       json = codexray::QueryCallGraphJson(
-          conn.Get(), query_opts.symbol, query_opts.file_path,
+          conn.Get(), query_opts.symbol, file_path_for_query,
           query_opts.depth, query_opts.direction);
     else if (query_opts.query_type == "class_graph")
       json = codexray::QueryClassGraphJson(
-          conn.Get(), query_opts.symbol, query_opts.file_path);
+          conn.Get(), query_opts.symbol, file_path_for_query);
     else if (query_opts.query_type == "data_flow")
       json = codexray::QueryDataFlowJson(
-          conn.Get(), query_opts.symbol, query_opts.file_path);
+          conn.Get(), query_opts.symbol, file_path_for_query);
     else if (query_opts.query_type == "control_flow") {
       // db_dir：db 文件所在目录，用于定位 cfg/ pb 文件
       std::string db_dir = std::filesystem::path(query_opts.db_path).parent_path().string();
       json = codexray::QueryControlFlowJson(
-          conn.Get(), db_dir, query_opts.symbol, query_opts.file_path);
+          conn.Get(), db_dir, query_opts.symbol, file_path_for_query);
     }
     else {
       std::cerr << "Unknown query type: " << query_opts.query_type << "\n";

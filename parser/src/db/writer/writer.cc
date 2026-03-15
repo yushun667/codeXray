@@ -1,5 +1,6 @@
 #include "writer.h"
 #include "../../common/logger.h"
+#include "../../common/path_util.h"
 #include "cfg.pb.h"
 #include <cstdio>
 #include <cstring>
@@ -150,6 +151,11 @@ void DbWriter::PrepareStatements() {
   sqlite3_prepare_v2(db_, kSqlInsertDataFlowEdge, -1, &stmt_insert_df_edge_, nullptr);
   sqlite3_prepare_v2(db_, kSqlUpsertParsedFile, -1, &stmt_upsert_parsed_file_, nullptr);
   sqlite3_prepare_v2(db_, kSqlUpsertCfgIndex, -1, &stmt_upsert_cfg_index_, nullptr);
+  // 预分配 cache 容量，避免全量解析时大量符号导致 rehash
+  usr_sym_cache_.reserve(65536);
+  usr_cls_cache_.reserve(8192);
+  usr_gv_cache_.reserve(8192);
+  file_cache_.reserve(4096);
 }
 
 // ─── SetDbDir ────────────────────────────────────────────────────────────────
@@ -162,20 +168,21 @@ void DbWriter::SetDbDir(const std::string& db_dir) {
 // 使用预编译的 stmt_insert_file_ 和 stmt_select_file_，避免逐次 prepare/finalize
 
 int64_t DbWriter::EnsureFile(const std::string& path) {
+  const std::string canonical = path.empty() ? path : NormalizePath(path);
   {
     std::shared_lock<std::shared_mutex> lk(file_mu_);
-    auto it = file_cache_.find(path);
+    auto it = file_cache_.find(canonical);
     if (it != file_cache_.end()) return it->second;
   }
-  // INSERT OR IGNORE
+  // INSERT OR IGNORE（统一用规范化路径，便于查询时 file+line 匹配）
   sqlite3_bind_int64(stmt_insert_file_, 1, project_id_);
-  sqlite3_bind_text(stmt_insert_file_, 2, path.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt_insert_file_, 2, canonical.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_step(stmt_insert_file_);
   sqlite3_reset(stmt_insert_file_);
 
   // SELECT id
   sqlite3_bind_int64(stmt_select_file_, 1, project_id_);
-  sqlite3_bind_text(stmt_select_file_, 2, path.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt_select_file_, 2, canonical.c_str(), -1, SQLITE_TRANSIENT);
   int64_t fid = 0;
   if (sqlite3_step(stmt_select_file_) == SQLITE_ROW)
     fid = sqlite3_column_int64(stmt_select_file_, 0);
@@ -183,7 +190,7 @@ int64_t DbWriter::EnsureFile(const std::string& path) {
 
   if (fid > 0) {
     std::unique_lock<std::shared_mutex> lk(file_mu_);
-    file_cache_[path] = fid;
+    file_cache_[canonical] = fid;
   }
   return fid;
 }
