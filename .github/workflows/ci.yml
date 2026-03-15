@@ -1,0 +1,64 @@
+# CodeXray CI：扩展构建 + 解析器构建（可选）
+# 触发：推送到 main / 拉取请求到 main
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # 构建 VSCode 扩展：安装依赖、TypeScript 编译、可选 lint
+  build-extension:
+    name: 扩展构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 编译扩展
+        run: npm run compile
+
+      - name: Lint（可选）
+        run: npm run lint
+        continue-on-error: true
+
+  # 构建 C++ 解析器：需要 LLVM/Clang、SQLite、Protobuf、nlohmann-json
+  build-parser:
+    name: 解析器构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libsqlite3-dev \
+            libprotobuf-dev protobuf-compiler \
+            nlohmann-json3-dev \
+            clang-14 libclang-14-dev llvm-14-dev
+
+      - name: 配置并构建解析器
+        working-directory: parser
+        env:
+          LLVM_DIR: /usr/lib/llvm-14/lib/cmake/llvm
+          Clang_DIR: /usr/lib/llvm-14/lib/cmake/clang
+        run: |
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR="$LLVM_DIR" \
+            -DClang_DIR="$Clang_DIR"
+          cmake --build . --config Release
