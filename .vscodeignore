@@ -1,11 +1,43 @@
+# 开发工具配置
 .vscode/**
 .vscode-test/**
+.cursor/**
+.claude/**
+
+# 源码（TypeScript 原文件，只打包编译产物 out/）
 src/**
-doc/**
-.git/**
-.gitignore
 tsconfig.json
 **/*.map
+
+# TypeScript 源文件（含 resources/ui/src）；注意 **/*.ts 不影响 .js 文件
 **/*.ts
+
+# 文档
+doc/**
+docs/**
+
+# Git
+.git/**
+.gitignore
+
+# Node 相关
 node_modules/**
 !node_modules/@vscode/codicons/**
+
+# Parser 源码（只打包二进制产物，不打包 C++ 源码）
+parser/**
+
+# UI 源文件（只打包 dist，不打包源码）
+resources/ui/src/**
+resources/ui/index.html
+resources/ui/tsconfig.json
+resources/ui/vite.config.ts
+resources/ui/package.json
+resources/ui/package-lock.json
+resources/ui/.gitignore
+resources/ui/node_modules/**
+
+# parser 二进制临时中转目录（打包时会将对应平台 parser 复制到固定路径）
+resources/bin/darwin-arm64/**
+resources/bin/linux-x64/**
+resources/bin/win32-x64/**
