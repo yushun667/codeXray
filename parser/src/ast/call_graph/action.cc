@@ -62,8 +62,8 @@ class CallGraphVisitor
     : public clang::RecursiveASTVisitor<CallGraphVisitor> {
 public:
   CallGraphVisitor(clang::ASTContext& ctx,
-                   std::vector<SymbolRow>* symbols,
-                   std::vector<CallEdgeRow>* edges,
+                   std::vector<_CG_SymbolRow>* symbols,
+                   std::vector<_CG_CallEdgeRow>* edges,
                    std::vector<std::string>* ref_files,
                    const std::unordered_map<std::string,
                        std::vector<std::string>>& fp_map)
@@ -126,7 +126,7 @@ public:
       // Ensure callee symbol is recorded
       RecordSymbol(callee_decl);
 
-      CallEdgeRow e;
+      _CG_CallEdgeRow e;
       e.caller_usr  = current_caller_usr_;
       e.callee_usr  = callee_usr;
       e.edge_type   = "direct";
@@ -140,7 +140,7 @@ public:
       // 间接调用：普通函数指针 或 成员函数指针（obj.*fp / ptr->*fp）
       auto possible = function_pointer::GetPossibleCallees(call, ctx_, &fp_map_);
       for (const auto& callee_usr : possible) {
-        CallEdgeRow e;
+        _CG_CallEdgeRow e;
         e.caller_usr = current_caller_usr_;
         e.callee_usr = callee_usr;
         e.edge_type  = "via_function_pointer";
@@ -169,7 +169,7 @@ public:
     std::string callee_usr = GenUSR(ctor);
     if (callee_usr.empty()) return true;
     RecordSymbol(ctor);
-    CallEdgeRow e;
+    _CG_CallEdgeRow e;
     e.caller_usr = current_caller_usr_;
     e.callee_usr = callee_usr;
     e.edge_type  = "direct";
@@ -196,7 +196,7 @@ private:
     if (it != usr_index_.end()) {
       // 已存在：仅当本次是定义且之前未记录定义位置时，回填 def_* 字段
       if (fd->isThisDeclarationADefinition()) {
-        SymbolRow& existing = (*symbols_)[it->second];
+        _CG_SymbolRow& existing = (*symbols_)[it->second];
         if (existing.def_line == 0) {
           auto li = GetLocInfo(sm_, fd->getSourceRange());
           existing.def_file_path = li.file;
@@ -214,7 +214,7 @@ private:
     size_t idx = symbols_->size();
     usr_index_[usr] = idx;
 
-    SymbolRow r;
+    _CG_SymbolRow r;
     r.usr  = usr;
     r.name = fd->getNameAsString();
     r.qualified_name = fd->getQualifiedNameAsString();
@@ -280,8 +280,8 @@ private:
 
   clang::ASTContext& ctx_;
   const clang::SourceManager& sm_;
-  std::vector<SymbolRow>* symbols_;
-  std::vector<CallEdgeRow>* edges_;
+  std::vector<_CG_SymbolRow>* symbols_;
+  std::vector<_CG_CallEdgeRow>* edges_;
   std::vector<std::string>* ref_files_;
   const std::unordered_map<std::string, std::vector<std::string>>& fp_map_;
   std::string current_caller_usr_;
@@ -292,8 +292,8 @@ private:
 }  // namespace
 
 void Analyze(clang::ASTContext& ctx,
-             std::vector<SymbolRow>* symbols,
-             std::vector<CallEdgeRow>* call_edges,
+             std::vector<_CG_SymbolRow>* symbols,
+             std::vector<_CG_CallEdgeRow>* call_edges,
              std::vector<std::string>* referenced_files) {
   // Phase 0: collect function pointer assignments
   std::unordered_map<std::string, std::vector<std::string>> fp_map;

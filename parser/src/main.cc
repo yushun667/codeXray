@@ -19,6 +19,7 @@
 #include "compile_commands/load.h"
 #include "incremental/incremental.h"
 #include "scheduler/ipc_proto.h"
+#include "scheduler/pool.h"
 #include <filesystem>
 #include <iostream>
 #include <cstdlib>
@@ -245,17 +246,6 @@ int main(int argc, char* argv[]) {
     if (!codexray::EnsureSchema(conn.Get())) {
       std::cerr << "Schema init failed.\n";
       return static_cast<int>(codexray::ExitCode::kQueryFailed);
-    }
-
-    // 规范化路径，与解析时写入 DB 的路径形式一致（解析使用 NormalizePath/MakeAbsolute）
-    if (!query_opts.project_root.empty())
-      query_opts.project_root = codexray::NormalizePath(query_opts.project_root);
-    if (!query_opts.file_path.empty()) {
-      if (!query_opts.project_root.empty())
-        query_opts.file_path =
-            codexray::MakeAbsolute(query_opts.project_root, query_opts.file_path);
-      else
-        query_opts.file_path = codexray::NormalizePath(query_opts.file_path);
     }
 
     // Lazy parse: if target file not yet parsed, trigger on-demand parse

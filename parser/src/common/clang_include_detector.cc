@@ -55,7 +55,7 @@ ClangIncludeEnv DetectEnv() {
   std::string rd = RunCommand("clang++ -print-resource-dir 2>/dev/null");
   while (!rd.empty() && (rd.back() == '\n' || rd.back() == '\r' || rd.back() == ' '))
     rd.pop_back();
-  env.resource_dir = rd;
+  env.resource_dir = std::string(rd.c_str(), rd.size());
 
   // system include paths via verbose preprocessing of empty stdin
   std::string verbose = RunCommand("echo '' | clang++ -E -x c++ - -v 2>&1");
@@ -94,8 +94,9 @@ const ClangIncludeEnv& GetClangIncludeEnv() {
     // 优先从环境变量读取（fork+exec 子进程路径，避免重复探测）
     const char* ev = std::getenv("CODEXRAY_CLANG_INCLUDE_ENV");
     if (ev && ev[0]) {
-      env = ParseEnvString(std::string(ev));
-      LogInfo("ClangIncludeEnv: loaded from env var, resource_dir=" +
+      std::string ev_str(ev);
+      env = ParseEnvString(ev_str);
+      LogInfo(std::string("ClangIncludeEnv: loaded from env var, resource_dir=") +
               env.resource_dir + " system_includes=" +
               std::to_string(env.system_includes.size()));
     } else {
