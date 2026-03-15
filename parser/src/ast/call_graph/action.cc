@@ -138,7 +138,7 @@ public:
       edges_->push_back(e);
     } else {
       // 间接调用：普通函数指针 或 成员函数指针（obj.*fp / ptr->*fp）
-      auto possible = function_pointer::GetPossibleCallees(call, ctx_, &fp_map_);
+      auto possible = codexray::function_pointer::GetPossibleCallees(call, ctx_, &fp_map_);
       for (const auto& callee_usr : possible) {
         _CG_CallEdgeRow e;
         e.caller_usr = current_caller_usr_;
@@ -297,7 +297,7 @@ void Analyze(clang::ASTContext& ctx,
              std::vector<std::string>* referenced_files) {
   // Phase 0: collect function pointer assignments
   std::unordered_map<std::string, std::vector<std::string>> fp_map;
-  function_pointer::CollectAssignments(ctx, &fp_map);
+  codexray::function_pointer::CollectAssignments(ctx, &fp_map);
 
   CallGraphVisitor v(ctx, symbols, call_edges, referenced_files, fp_map);
   v.TraverseDecl(ctx.getTranslationUnitDecl());
