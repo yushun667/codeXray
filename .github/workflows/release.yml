@@ -1,0 +1,238 @@
+# CodeXray 三平台打包发布工作流
+# 触发：推送 v* tag（如 v0.1.0）
+# 产物：codexray-darwin-arm64-x.y.z.vsix / codexray-linux-x64-x.y.z.vsix / codexray-win32-x64-x.y.z.vsix
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: 三平台并行构建 C++ parser 二进制
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-parser:
+    name: Build Parser (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            llvm_suffix: aarch64-macos
+          - os: ubuntu-22.04
+            target: linux-x64
+            llvm_suffix: x86_64-ubuntu-22.04
+          - os: windows-latest
+            target: win32-x64
+            llvm_suffix: x86_64-windows
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── macOS 依赖 ──────────────────────────────────────────────────────────
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf nlohmann-json sqlite3
+
+      # ── Linux 依赖 ──────────────────────────────────────────────────────────
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libprotobuf-dev protobuf-compiler nlohmann-json3-dev libsqlite3-dev
+
+      # ── Windows 依赖（vcpkg） ────────────────────────────────────────────────
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install protobuf sqlite3 nlohmann-json --triplet x64-windows
+
+      # ── LLVM 缓存（所有平台）────────────────────────────────────────────────
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: parser/third_party/llvm
+          key: llvm-18.1.8-${{ matrix.llvm_suffix }}
+
+      # ── 下载 LLVM（macOS / Linux）─────────────────────────────────────────
+      - name: Download LLVM (macOS/Linux)
+        if: runner.os != 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        run: bash parser/third_party/download_llvm.sh
+
+      # ── 下载 LLVM（Windows）──────────────────────────────────────────────
+      - name: Download LLVM (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: parser/third_party/download_llvm.ps1
+
+      # ── 激活 MSVC 环境（Windows）─────────────────────────────────────────
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # ── CMake 构建（macOS / Linux）────────────────────────────────────────
+      - name: Build parser (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -B parser/build -S parser -DCMAKE_BUILD_TYPE=Release
+          cmake --build parser/build --target codexray-parser --config Release
+
+      # ── CMake 构建（Windows）─────────────────────────────────────────────
+      - name: Build parser (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B parser/build -S parser -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake --build parser/build --target codexray-parser --config Release
+
+      # ── Upload parser 二进制（macOS / Linux）─────────────────────────────
+      - name: Upload parser artifact (macOS/Linux)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-${{ matrix.target }}
+          path: parser/build/codexray-parser
+          if-no-files-found: error
+
+      # ── Upload parser 二进制（Windows）────────────────────────────────────
+      - name: Upload parser artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-${{ matrix.target }}
+          path: parser/build/Release/codexray-parser.exe
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: 汇总三份 parser 产物，打包三个平台 .vsix
+  # ─────────────────────────────────────────────────────────────────────────────
+  package-vsix:
+    name: Package VSIX
+    needs: build-parser
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 下载三份 parser artifact ────────────────────────────────────────────
+      - name: Download parser (darwin-arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: parser-darwin-arm64
+          path: resources/bin/darwin-arm64
+
+      - name: Download parser (linux-x64)
+        uses: actions/download-artifact@v4
+        with:
+          name: parser-linux-x64
+          path: resources/bin/linux-x64
+
+      - name: Download parser (win32-x64)
+        uses: actions/download-artifact@v4
+        with:
+          name: parser-win32-x64
+          path: resources/bin/win32-x64
+
+      # 设置可执行权限（macOS/Linux 二进制）
+      - name: Set executable permissions
+        run: |
+          chmod +x resources/bin/darwin-arm64/codexray-parser
+          chmod +x resources/bin/linux-x64/codexray-parser
+
+      # ── 安装依赖 + 编译 TypeScript ──────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Compile TypeScript
+        run: npm run compile
+
+      # ── 构建 UI ─────────────────────────────────────────────────────────────
+      - name: Build UI
+        run: npm run build:ui
+
+      # ── 获取版本号（从 tag）────────────────────────────────────────────────
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      # ── 打包三个平台 .vsix ──────────────────────────────────────────────────
+      # 每次打包前将对应平台 parser 复制到固定路径，打包完成后删除
+      - name: Package darwin-arm64
+        run: |
+          cp resources/bin/darwin-arm64/codexray-parser resources/bin/codexray-parser
+          npx vsce package --target darwin-arm64 -o codexray-darwin-arm64-${{ steps.version.outputs.VERSION }}.vsix
+          rm resources/bin/codexray-parser
+
+      - name: Package linux-x64
+        run: |
+          cp resources/bin/linux-x64/codexray-parser resources/bin/codexray-parser
+          npx vsce package --target linux-x64 -o codexray-linux-x64-${{ steps.version.outputs.VERSION }}.vsix
+          rm resources/bin/codexray-parser
+
+      - name: Package win32-x64
+        run: |
+          cp resources/bin/win32-x64/codexray-parser.exe resources/bin/codexray-parser.exe
+          npx vsce package --target win32-x64 -o codexray-win32-x64-${{ steps.version.outputs.VERSION }}.vsix
+          rm resources/bin/codexray-parser.exe
+
+      # ── Upload .vsix artifacts ──────────────────────────────────────────────
+      - name: Upload VSIX artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-packages
+          path: '*.vsix'
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3: 创建 GitHub Release 并上传 .vsix
+  # ─────────────────────────────────────────────────────────────────────────────
+  create-release:
+    name: Create Release
+    needs: package-vsix
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # 仅此 job 需要写权限，最小权限原则
+
+    steps:
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Download VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-packages
+          path: vsix-packages
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "CodeXray v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## CodeXray v${{ steps.version.outputs.VERSION }}
+
+            ### 安装方式
+
+            根据平台下载对应 `.vsix` 文件，在 VSCode 中通过 "Extensions: Install from VSIX..." 安装。
+
+            | 平台 | 文件 |
+            |------|------|
+            | macOS ARM64 (Apple Silicon) | `codexray-darwin-arm64-${{ steps.version.outputs.VERSION }}.vsix` |
+            | Linux x86_64 | `codexray-linux-x64-${{ steps.version.outputs.VERSION }}.vsix` |
+            | Windows x64 | `codexray-win32-x64-${{ steps.version.outputs.VERSION }}.vsix` |
+          draft: false
+          prerelease: false
+          files: vsix-packages/*.vsix
