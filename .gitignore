@@ -2,3 +2,14 @@ node_modules/
 out/
 *.vsix
 .DS_Store
+
+parser/third_party/llvm/
+parser/third_party/clang/
+parser/third_party/lld/
+parser/third_party/*.tar.xz
+parser/build/
+resources/ui/node_modules/
+resources/ui/dist/
+resources/bin/**
+!resources/bin/.gitkeep
+.cursor/
