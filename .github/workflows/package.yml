@@ -25,6 +25,10 @@ jobs:
             nlohmann-json3-dev \
             clang-14 libclang-14-dev llvm-14-dev
 
+      - name: 使用系统 LLVM（避免 third_party 内 macOS 版 LLVM 被选用）
+        run: |
+          mv parser/third_party/llvm parser/third_party/llvm.bak 2>/dev/null || true
+
       - name: 构建解析器
         working-directory: parser
         env:
