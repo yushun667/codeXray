@@ -1,5 +1,6 @@
 #include "connection.h"
 #include "../common/logger.h"
+#include <sqlite3.h>
 #include <string>
 
 namespace codexray {
