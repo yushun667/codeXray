@@ -1,35 +1,23 @@
 /**
- * 解析引擎 history：parse_run 写入、list-runs JSON
- * 参考：doc/01-解析引擎 接口约定 2.3、数据库设计 parse_run
+ * 历史解析记录：每次 parse 写入 parse_run，提供 list-runs 接口。
+ * 设计 §3.1 / §4.4 / §5.7。
  */
-
-#ifndef CODEXRAY_PARSER_HISTORY_HISTORY_H_
-#define CODEXRAY_PARSER_HISTORY_HISTORY_H_
-
+#pragma once
+#include <sqlite3.h>
 #include <cstdint>
 #include <string>
 
-struct sqlite3;
-
 namespace codexray {
 
-/** 插入一条 parse_run（status=running），返回 run_id */
+// 在 DB 中创建 parse_run 记录，返回 run_id（0 表示失败）
 int64_t InsertParseRun(sqlite3* db, int64_t project_id, const std::string& mode);
 
-/** 更新 parse_run：finished_at, files_parsed, files_failed, status[, error_message] */
-bool UpdateParseRun(sqlite3* db, int64_t run_id,
-                   const std::string& finished_at,
-                   int files_parsed,
-                   int files_failed,
-                   const std::string& status,
-                   const std::string& error_message = "");
+// 更新 parse_run 状态（completed/failed）及文件计数
+bool UpdateParseRun(sqlite3* db, int64_t run_id, const std::string& status,
+                    int files_parsed, int files_failed,
+                    const std::string& error_message = "");
 
-/** 按 started_at 降序返回 JSON 数组，每项 run_id, started_at, finished_at, mode, files_parsed, status；project_id=0 表示全部 */
-std::string ListRunsJson(sqlite3* db, int64_t project_id, int limit);
-
-/** 按 root_path 查 project_id，不存在返回 0 */
-int64_t GetProjectId(sqlite3* db, const std::string& root_path);
+// 返回最近 limit 条解析记录的 JSON 字符串
+std::string ListRunsJson(sqlite3* db, int64_t project_id, int limit = 20);
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_HISTORY_HISTORY_H_
