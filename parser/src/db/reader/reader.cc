@@ -1,5 +1,6 @@
 #include "reader.h"
 #include "../../common/logger.h"
+#include "../../common/path_util.h"
 #include "cfg.pb.h"
 #include <filesystem>
 #include <fstream>
@@ -744,6 +745,20 @@ std::vector<QueryNode> QuerySymbolsAt(sqlite3* db, int64_t project_id,
     BindText(s, 1, file_path);
     if (sqlite3_step(s) == SQLITE_ROW) fid = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
+  }
+  if (!fid) {
+    // 与解析时 MakeAbsolute/NormalizePath 一致，用规范化路径再试一次
+    std::string norm = NormalizePath(file_path);
+    if (norm != file_path) {
+      fid = QueryFileIdByPath(db, project_id, norm);
+      if (!fid) {
+        sqlite3_stmt* s = nullptr;
+        sqlite3_prepare_v2(db, "SELECT id FROM file WHERE path=? LIMIT 1", -1, &s, nullptr);
+        BindText(s, 1, norm);
+        if (sqlite3_step(s) == SQLITE_ROW) fid = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+      }
+    }
   }
   if (!fid) return result;
   auto rows = QuerySymbolsByFileAndLine(db, fid, line, column);
