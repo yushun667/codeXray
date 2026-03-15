@@ -9,8 +9,9 @@ namespace codexray {
 void LogInit(const std::string& /*log_file*/, bool verbose);
 
 void LogInfo(const std::string& msg);
-void LogInfo(const char* msg);  // 重载：便于 GCC 下避免 string 到 const char* 的歧义
+void LogInfo(const char* fmt, ...);  // printf 风格，单参即 const char* 也可（供 load.cc 等）
 void LogWarn(const std::string& msg);
 void LogError(const std::string& msg);
+void LogError(const char* fmt, ...);  // printf 风格，供 load.cc 等单条格式化日志
 
 }  // namespace codexray

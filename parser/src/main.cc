@@ -27,6 +27,13 @@
 #include <unistd.h>
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <cstdint>
+
+// 前向声明，确保 Linux/CI 下 main.cc 总能解析 codexray::GetFileMtime / ComputeFileHash（定义在 incremental.cc）
+namespace codexray {
+int64_t GetFileMtime(const std::string& path);
+std::string ComputeFileHash(const std::string& path);
+}
 
 namespace {
 
