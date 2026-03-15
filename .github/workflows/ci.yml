@@ -33,10 +33,10 @@ jobs:
         run: npm run lint
         continue-on-error: true
 
-  # 构建 C++ 解析器：需要 LLVM/Clang、SQLite、Protobuf、nlohmann-json
+  # 构建 C++ 解析器：需要 LLVM/Clang、SQLite、Protobuf、nlohmann-json（固定 Ubuntu 22.04 以匹配 LLVM-14）
   build-parser:
     name: 解析器构建
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake \
+            build-essential cmake pkg-config \
             libsqlite3-dev \
             libprotobuf-dev protobuf-compiler \
             nlohmann-json3-dev \
@@ -60,5 +60,12 @@ jobs:
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_DIR="$LLVM_DIR" \
-            -DClang_DIR="$Clang_DIR"
-          cmake --build . -j$(nproc)
+            -DClang_DIR="$Clang_DIR" 2>&1 | tee cmake.log
+          cmake --build . -j$(nproc) 2>&1 | tee build.log
+
+      - name: 解析器构建失败时输出日志尾部
+        if: failure()
+        working-directory: parser/build
+        run: |
+          echo "=== cmake.log tail ===" && tail -80 cmake.log
+          echo "=== build.log tail ===" && tail -80 build.log

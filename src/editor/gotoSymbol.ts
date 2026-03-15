@@ -26,7 +26,7 @@ export async function execute(uri: vscode.Uri, line: number, column: number): Pr
 /**
  * 注册 codexray.gotoSymbolInEditor 命令（接收 args: uri, line, column）
  */
-export function registerGotoSymbolCommand(context: vscode.ExtensionContext): vscode.Disposable {
+export function registerGotoSymbolCommand(_context: vscode.ExtensionContext): vscode.Disposable {
   log.debug('注册 gotoSymbolInEditor 命令');
   return vscode.commands.registerCommand(
     'codexray.gotoSymbolInEditor',
