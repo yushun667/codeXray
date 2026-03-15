@@ -49,14 +49,19 @@ export class Config {
     return (cfg.get<string>('compileCommandsPath') ?? '').trim();
   }
 
-  /** 解析器可执行体路径；优先 bin/，开发时若不存在则用 parser/build/ */
+  /** 解析器可执行体路径
+   * 打包版本：resources/bin/codexray-parser[.exe]（固定路径，由 CI 打包时复制进去）
+   * 开发版本：同路径（本地开发时需手动将构建产物放置于此）
+   * 若不存在则 fallback 到 parser/build/（仅供本地开发兜底）
+   */
   getParserPath(): string {
-    if (!this._context) {
-      return path.join('bin', process.platform === 'win32' ? 'codexray-parser.exe' : 'codexray-parser');
-    }
     const base = process.platform === 'win32' ? 'codexray-parser.exe' : 'codexray-parser';
-    const binPath = this._context.asAbsolutePath(path.join('bin', base));
+    if (!this._context) {
+      return path.join('resources', 'bin', base);
+    }
+    const binPath = this._context.asAbsolutePath(path.join('resources', 'bin', base));
     if (fs.existsSync(binPath)) return binPath;
+    // 本地开发兜底：parser/build/ 目录（cmake 构建产物）
     const buildPath = this._context.asAbsolutePath(path.join('parser', 'build', base));
     if (fs.existsSync(buildPath)) return buildPath;
     return binPath;
