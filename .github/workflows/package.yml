@@ -1,0 +1,179 @@
+# 三平台构建并打包 .vsix（扩展 + 解析器）
+# 触发：推送到 main / 手动触发
+name: Package
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  package-linux:
+    name: 打包 Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装解析器依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libsqlite3-dev \
+            libprotobuf-dev protobuf-compiler \
+            nlohmann-json3-dev \
+            clang-14 libclang-14-dev llvm-14-dev
+
+      - name: 构建解析器
+        working-directory: parser
+        env:
+          LLVM_DIR: /usr/lib/llvm-14/lib/cmake/llvm
+          Clang_DIR: /usr/lib/llvm-14/lib/cmake/clang
+        run: |
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR" -DClang_DIR="$Clang_DIR"
+          cmake --build . -j$(nproc)
+
+      - name: 复制解析器到 bin
+        run: |
+          mkdir -p bin
+          cp parser/build/codexray-parser bin/
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 安装依赖并打包扩展
+        run: |
+          npm ci
+          npm run package
+
+      - name: 重命名并上传 Linux .vsix
+        run: |
+          mv codexray-0.1.0.vsix codexray-0.1.0-linux-x64.vsix
+        env:
+          VERSION: "0.1.0"
+
+      - name: 上传 Linux 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexray-linux-x64
+          path: codexray-0.1.0-linux-x64.vsix
+
+  package-macos:
+    name: 打包 macOS
+    runs-on: macos-14
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装解析器依赖
+        run: |
+          brew update
+          brew install cmake pkg-config sqlite protobuf nlohmann-json llvm@14
+
+      - name: 构建解析器
+        working-directory: parser
+        run: |
+          LLVM_PREFIX=$(brew --prefix llvm@14)
+          export LLVM_DIR="$LLVM_PREFIX/lib/cmake/llvm"
+          export Clang_DIR="$LLVM_PREFIX/lib/cmake/clang"
+          export PATH="$LLVM_PREFIX/bin:$PATH"
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR" -DClang_DIR="$Clang_DIR"
+          cmake --build . -j$(sysctl -n hw.ncpu)
+
+      - name: 复制解析器到 bin
+        run: |
+          mkdir -p bin
+          cp parser/build/codexray-parser bin/
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 安装依赖并打包扩展
+        run: |
+          npm ci
+          npm run package
+
+      - name: 重命名并上传 macOS .vsix
+        run: |
+          ARCH=$(uname -m)
+          SUFFIX=$([ "$ARCH" = "arm64" ] && echo "darwin-arm64" || echo "darwin-x64")
+          mv codexray-0.1.0.vsix codexray-0.1.0-${SUFFIX}.vsix
+          echo "VSIX_PATH=codexray-0.1.0-${SUFFIX}.vsix" >> $GITHUB_ENV
+
+      - name: 上传 macOS 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexray-darwin-${{ runner.arch }}
+          path: ${{ env.VSIX_PATH }}
+
+  package-windows:
+    name: 打包 Windows x64
+    runs-on: windows-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 下载并安装 LLVM 14
+        shell: pwsh
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.0/LLVM-14.0.0-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile llvm-installer.exe -UseBasicParsing
+          Start-Process -FilePath ".\llvm-installer.exe" -ArgumentList "/S" -Wait
+          echo "LLVM_DIR=C:\Program Files\LLVM\lib\cmake\llvm" >> $env:GITHUB_ENV
+          echo "Clang_DIR=C:\Program Files\LLVM\lib\cmake\clang" >> $env:GITHUB_ENV
+
+      - name: 安装 vcpkg 依赖
+        shell: pwsh
+        run: |
+          $vcpkgRoot = "$env:GITHUB_WORKSPACE\vcpkg"
+          git clone https://github.com/Microsoft/vcpkg.git $vcpkgRoot
+          & "$vcpkgRoot\bootstrap-vcpkg.ps1" -disableMetrics
+          & "$vcpkgRoot\vcpkg" install protobuf:x64-windows sqlite3:x64-windows nlohmann-json:x64-windows
+
+      - name: 构建解析器
+        shell: pwsh
+        working-directory: parser
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: |
+          New-Item -ItemType Directory -Force -Path build
+          Set-Location build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DLLVM_DIR="$env:LLVM_DIR" `
+            -DClang_DIR="$env:Clang_DIR"
+          cmake --build . --config Release
+
+      - name: 复制解析器到 bin
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin
+          Copy-Item parser\build\codexray-parser.exe bin\
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 安装依赖并打包扩展
+        run: npm ci && npm run package
+
+      - name: 重命名并上传 Windows .vsix
+        shell: pwsh
+        run: Rename-Item codexray-0.1.0.vsix codexray-0.1.0-win32-x64.vsix
+
+      - name: 上传 Windows 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexray-win32-x64
+          path: codexray-0.1.0-win32-x64.vsix
