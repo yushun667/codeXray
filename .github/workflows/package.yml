@@ -31,12 +31,12 @@ jobs:
           LLVM_DIR: /usr/lib/llvm-14/lib/cmake/llvm
           Clang_DIR: /usr/lib/llvm-14/lib/cmake/clang
         run: |
-          set -e -o pipefail
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_DIR="$LLVM_DIR" \
             -DClang_DIR="$Clang_DIR" 2>&1 | tee cmake.log
           cmake --build . -j$(nproc) 2>&1 | tee build.log
+          test -f codexray-parser || (echo "=== cmake.log tail ===" && tail -60 cmake.log && echo "=== build.log tail ===" && tail -60 build.log && exit 1)
 
       - name: 解析器构建失败时输出日志
         if: failure()
@@ -44,6 +44,13 @@ jobs:
         run: |
           echo "=== cmake.log tail ===" && tail -100 cmake.log
           echo "=== build.log tail ===" && tail -100 build.log
+
+      - name: 上传解析器构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-build-logs-linux
+          path: parser/build/*.log
 
       - name: 复制解析器到 bin
         run: |
@@ -80,26 +87,20 @@ jobs:
       - name: 安装解析器依赖
         run: |
           brew update
-          brew install cmake pkg-config sqlite protobuf nlohmann-json llvm@14
-
-      - name: 验证 LLVM 路径
-        run: |
-          LLVM_PREFIX=$(brew --prefix llvm@14)
-          echo "LLVM_PREFIX=$LLVM_PREFIX"
-          ls -la "$LLVM_PREFIX/lib/cmake/llvm" || true
-          ls -la "$LLVM_PREFIX/lib/cmake/clang" || true
+          brew install cmake pkg-config sqlite protobuf nlohmann-json
+          brew install llvm@14 2>/dev/null || brew install llvm
 
       - name: 构建解析器
         working-directory: parser
         run: |
-          set -e -o pipefail
-          LLVM_PREFIX=$(brew --prefix llvm@14)
+          LLVM_PREFIX=$(brew --prefix llvm@14 2>/dev/null || brew --prefix llvm)
           export LLVM_DIR="$LLVM_PREFIX/lib/cmake/llvm"
           export Clang_DIR="$LLVM_PREFIX/lib/cmake/clang"
           export PATH="$LLVM_PREFIX/bin:$PATH"
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR" -DClang_DIR="$Clang_DIR" 2>&1 | tee cmake.log
           cmake --build . -j$(sysctl -n hw.ncpu) 2>&1 | tee build.log
+          test -f codexray-parser || (echo "=== cmake.log tail ===" && tail -60 cmake.log && echo "=== build.log tail ===" && tail -60 build.log && exit 1)
 
       - name: 解析器构建失败时输出日志
         if: failure()
@@ -140,6 +141,7 @@ jobs:
   package-windows:
     name: 打包 Windows x64
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
@@ -159,11 +161,15 @@ jobs:
       - name: 安装 vcpkg 与依赖
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $vcpkgDir = Join-Path $env:GITHUB_WORKSPACE "vcpkg"
           git clone --depth 1 https://github.com/Microsoft/vcpkg.git $vcpkgDir
           Set-Location $vcpkgDir
           .\bootstrap-vcpkg.ps1 -disableMetrics
-          .\vcpkg.exe install protobuf:x64-windows sqlite3:x64-windows nlohmann-json:x64-windows
+          if (-not (Test-Path .\vcpkg.exe)) { Write-Error "vcpkg.exe not found after bootstrap" }
+          .\vcpkg.exe install protobuf:x64-windows --x-wait-for-lock
+          .\vcpkg.exe install sqlite3:x64-windows --x-wait-for-lock
+          .\vcpkg.exe install nlohmann-json:x64-windows --x-wait-for-lock
           echo "VCPKG_ROOT=$vcpkgDir" >> $env:GITHUB_ENV
 
       - name: 构建解析器
