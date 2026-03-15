@@ -26,8 +26,7 @@ jobs:
             clang-14 libclang-14-dev llvm-14-dev
 
       - name: 使用系统 LLVM（避免 third_party 内 macOS 版 LLVM 被选用）
-        run: |
-          mv parser/third_party/llvm parser/third_party/llvm.bak 2>/dev/null || true
+        run: rm -rf parser/third_party/llvm
 
       - name: 构建解析器
         working-directory: parser
@@ -48,6 +47,10 @@ jobs:
         run: |
           echo "=== cmake.log tail ===" && tail -100 cmake.log
           echo "=== build.log tail ===" && tail -100 build.log
+          echo "## Parser build log (Linux)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -80 build.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: 上传解析器构建日志（失败时）
         if: failure()
