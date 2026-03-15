@@ -1,28 +1,16 @@
 /**
- * 解析引擎公共模块：日志（落盘 + 可选 stderr）
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.16
+ * 日志 — 多级别（INFO/WARNING/ERROR），输出到 stderr；--verbose 控制 INFO。
  */
-
-#ifndef CODEXRAY_PARSER_COMMON_LOGGER_H_
-#define CODEXRAY_PARSER_COMMON_LOGGER_H_
-
-#include <cstdarg>
+#pragma once
 #include <string>
 
 namespace codexray {
 
-/** 初始化日志：log_path 为空则仅 stderr（当 also_stderr 为 true 时） */
-void LogInit(const std::string& log_path, bool also_stderr);
+void LogInit(const std::string& /*log_file*/, bool verbose);
 
-/** 写 INFO 级别日志，支持 printf 风格格式 */
-void LogInfo(const char* fmt, ...);
-
-/** 写 ERROR 级别日志，支持 printf 风格格式 */
-void LogError(const char* fmt, ...);
-
-/** 内部：带级别的格式化写入（供需要 va_list 的调用方使用） */
-void LogV(const char* level, const char* fmt, std::va_list ap);
+void LogInfo(const std::string& msg);
+void LogInfo(const char* msg);  // 重载：便于 GCC 下避免 string 到 const char* 的歧义
+void LogWarn(const std::string& msg);
+void LogError(const std::string& msg);
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_COMMON_LOGGER_H_

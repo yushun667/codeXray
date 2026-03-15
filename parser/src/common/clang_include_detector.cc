@@ -55,14 +55,17 @@ ClangIncludeEnv DetectEnv() {
   std::string rd = RunCommand("clang++ -print-resource-dir 2>/dev/null");
   while (!rd.empty() && (rd.back() == '\n' || rd.back() == '\r' || rd.back() == ' '))
     rd.pop_back();
-  env.resource_dir = std::string(rd.c_str(), rd.size());
+  env.resource_dir.assign(rd.c_str(), rd.size());
 
   // system include paths via verbose preprocessing of empty stdin
   std::string verbose = RunCommand("echo '' | clang++ -E -x c++ - -v 2>&1");
   env.system_includes = ParseSearchPaths(verbose);
 
-  LogInfo("ClangIncludeEnv: resource_dir=" + env.resource_dir +
-          " system_includes=" + std::to_string(env.system_includes.size()));
+  {
+    std::string msg = "ClangIncludeEnv: resource_dir=" + env.resource_dir +
+                      " system_includes=" + std::to_string(env.system_includes.size());
+    LogInfo(msg.c_str());
+  }
   return env;
 }
 
@@ -96,9 +99,12 @@ const ClangIncludeEnv& GetClangIncludeEnv() {
     if (ev && ev[0]) {
       std::string ev_str(ev);
       env = ParseEnvString(ev_str);
-      LogInfo(std::string("ClangIncludeEnv: loaded from env var, resource_dir=") +
-              env.resource_dir + " system_includes=" +
-              std::to_string(env.system_includes.size()));
+      {
+        std::string msg = std::string("ClangIncludeEnv: loaded from env var, resource_dir=") +
+                          env.resource_dir + " system_includes=" +
+                          std::to_string(env.system_includes.size());
+        LogInfo(msg.c_str());
+      }
     } else {
       env = DetectEnv();
     }
