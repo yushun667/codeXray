@@ -1,39 +1,49 @@
 /**
- * 解析引擎 AST：函数指针可能目标分析
- * 参考：doc/01-解析引擎 解析引擎详细功能与架构设计 §4.6
- * 当 CODEXRAY_HAVE_CLANG 时基于 CallExpr/ASTContext 分析；否则占位返回空。
+ * 函数指针分析：给定 CallExpr，解析所有可能的 callee USR。
+ * 设计 §3.8 / §5.3。
  */
+#pragma once
 
-#ifndef CODEXRAY_PARSER_AST_FUNCTION_POINTER_ANALYZER_H_
-#define CODEXRAY_PARSER_AST_FUNCTION_POINTER_ANALYZER_H_
+#ifdef CODEXRAY_HAVE_CLANG
+#include <clang/AST/ASTContext.h>
+#include <clang/AST/Expr.h>
+#endif
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#ifdef CODEXRAY_HAVE_CLANG
-namespace clang {
-class CallExpr;
-class ASTContext;
-}  // namespace clang
-#endif
-
 namespace codexray {
-
-/**
- * 占位（无 Clang）：仅接受 caller_usr，返回空。
- */
-std::vector<std::string> GetPossibleCallees(const std::string& caller_usr);
+namespace function_pointer {
 
 #ifdef CODEXRAY_HAVE_CLANG
 /**
- * 给定调用点为函数指针时，返回所有可能 callee 的 USR。
- * 有 Clang 时由 call_graph 在 VisitCallExpr 中调用。
+ * 分析阶段 1：从 TU 的所有赋值/初始化中，收集函数指针变量到函数 USR 的映射。
+ * 在单次 AST 遍历中由 call_graph 分析调用，传入 ASTContext。
+ *
+ * @param ctx     当前 TU 的 ASTContext
+ * @param fu_map  输出：VarDecl USR → 可能指向的函数 USR 列表
  */
-std::vector<std::string> GetPossibleCallees(clang::CallExpr* call,
-                                            clang::ASTContext& ctx,
-                                            const std::string& caller_usr);
-#endif
+void CollectAssignments(clang::ASTContext& ctx,
+                        std::unordered_map<std::string, std::vector<std::string>>* fu_map);
 
+/**
+ * 给定一个间接调用的 CallExpr（被调用者为函数指针），返回所有可能的 callee USR。
+ *
+ * 策略（分阶段）：
+ *  1. 从 fu_map（同 TU 赋值）中查找；
+ *  2. 若无结果，使用类型兼容的保守策略（枚举 ASTContext 中同类型函数）。
+ *
+ * @param call    CallExpr（被调用者不是 FunctionDecl）
+ * @param ctx     ASTContext
+ * @param fu_map  阶段 1 收集到的映射（可为 nullptr）
+ * @return 可能 callee 的 USR 列表（已去重），空表示无法解析
+ */
+std::vector<std::string> GetPossibleCallees(
+    clang::CallExpr* call,
+    clang::ASTContext& ctx,
+    const std::unordered_map<std::string, std::vector<std::string>>* fu_map);
+#endif  // CODEXRAY_HAVE_CLANG
+
+}  // namespace function_pointer
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_AST_FUNCTION_POINTER_ANALYZER_H_
