@@ -94,7 +94,7 @@ const ClangIncludeEnv& GetClangIncludeEnv() {
     // 优先从环境变量读取（fork+exec 子进程路径，避免重复探测）
     const char* ev = std::getenv("CODEXRAY_CLANG_INCLUDE_ENV");
     if (ev && ev[0]) {
-      env = ParseEnvString(ev);
+      env = ParseEnvString(std::string(ev));
       LogInfo("ClangIncludeEnv: loaded from env var, resource_dir=" +
               env.resource_dir + " system_includes=" +
               std::to_string(env.system_includes.size()));

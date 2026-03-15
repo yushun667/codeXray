@@ -1,48 +1,37 @@
 /**
- * 解析引擎 CLI：参数解析与子命令分发
- * 参考：doc/01-解析引擎 接口约定 2.1–2.3、§4
+ * CLI 参数解析：parse / query / list-runs 子命令。
+ * 设计 §3.1 / 接口约定 §2。
  */
-
-#ifndef CODEXRAY_PARSER_CLI_PARSE_ARGS_H_
-#define CODEXRAY_PARSER_CLI_PARSE_ARGS_H_
-
+#pragma once
 #include "driver/orchestrator.h"
+#include "query/query_options.h"
+#include "query/json_output.h"
 #include <string>
-#include <vector>
 
 namespace codexray {
-
-struct QueryOptions {
-  std::string db_path;
-  std::string project_root;
-  std::string query_type;   // call_graph | class_graph | data_flow | control_flow | symbol_at
-  std::string symbol;
-  std::string file_path;    // 与 line 同时给出时按「文件+行号」解析符号
-  int line = 0;
-  int column = 0;
-  int depth = 3;
-  bool verbose = false;
-  bool lazy = false;
-  unsigned parallel = 0;
-  std::vector<std::string> priority_dirs;
-};
 
 struct ListRunsOptions {
   std::string db_path;
   std::string project_root;
-  int limit = 100;
-  bool verbose = false;
+  int         limit   = 20;
+  bool        verbose = false;
 };
 
-enum class Subcommand { kNone, kParse, kQuery, kListRuns };
+enum class Subcommand {
+  kNone,
+  kParse,
+  kQuery,
+  kListRuns,
+};
 
-/** 解析 argc/argv，填充对应 opts，返回子命令；失败返回 kNone 并可选设置 error_msg */
+/**
+ * 解析 argc/argv，填充对应选项结构体，返回识别到的子命令。
+ * 出错时设置 *error_msg 并返回 kNone。
+ */
 Subcommand ParseArgs(int argc, char* argv[],
                      ParseOptions* parse_opts,
                      QueryOptions* query_opts,
                      ListRunsOptions* list_opts,
-                     std::string* error_msg = nullptr);
+                     std::string* error_msg);
 
 }  // namespace codexray
-
-#endif  // CODEXRAY_PARSER_CLI_PARSE_ARGS_H_
