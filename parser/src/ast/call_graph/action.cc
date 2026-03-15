@@ -3,6 +3,7 @@
 #ifdef CODEXRAY_HAVE_CLANG
 #include "../function_pointer/analyzer.h"
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/DeclTemplate.h>
 #include <clang/Index/USRGeneration.h>
 #include <clang/Basic/SourceManager.h>
 #include <llvm/ADT/SmallString.h>
@@ -94,6 +95,22 @@ public:
   }
   bool TraverseCXXDestructorDecl(clang::CXXDestructorDecl* dd) {
     return TraverseFunctionDecl(dd);
+  }
+
+  // 遍历函数模板时，除模板模式（pattern）外，还遍历所有实例化体。
+  // 模板体内的“依赖调用”（如 Site.getContext()、getAssumptions(Site)）在模式中
+  // getDirectCallee() 为 nullptr，只有在实例化体中才能解析出具体 callee。
+  bool TraverseFunctionTemplateDecl(clang::FunctionTemplateDecl* ftd) {
+    if (!ftd) return true;
+    if (!clang::RecursiveASTVisitor<CallGraphVisitor>::TraverseFunctionTemplateDecl(
+            ftd))
+      return false;
+    ftd->LoadLazySpecializations();
+    for (clang::FunctionDecl* inst : ftd->specializations()) {
+      if (inst && inst->isThisDeclarationADefinition())
+        TraverseFunctionDecl(inst);
+    }
+    return true;
   }
 
   bool VisitCallExpr(clang::CallExpr* call) {
