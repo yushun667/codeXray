@@ -23,9 +23,16 @@ std::vector<std::string> GetChangedFiles(sqlite3* db, int64_t project_id);
 /**
  * 按路径列表删除这些文件在 DB 中的旧数据（symbol/call_edge/class/global_var/cfg/parsed_file 等）。
  * 路径为工程内相对或绝对路径，会解析为 file_id 后删除。
+ * @param db_dir 数据库目录（用于删除 cfg 下的 pb 文件）；空则仅删 SQL 数据。
  */
 bool RemoveDataForFiles(sqlite3* db, int64_t project_id,
-                        const std::vector<std::string>& paths);
+                        const std::vector<std::string>& paths,
+                        const std::string& db_dir = "");
+
+/** 计算文件 mtime（秒），供 main/orchestrator 使用 */
+int64_t GetFileMtime(const std::string& path);
+/** 计算文件内容哈希，供 main/orchestrator 使用 */
+std::string ComputeFileHash(const std::string& path);
 
 }  // namespace codexray
 

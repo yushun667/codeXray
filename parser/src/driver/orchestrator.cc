@@ -68,6 +68,13 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   Connection conn;
   if (!conn.Open(db_path)) return static_cast<int>(ExitCode::kDbWriteFailed);
   if (!EnsureSchema(conn.Get())) return static_cast<int>(ExitCode::kDbWriteFailed);
+  // 全量解析：禁用自动 WAL checkpoint，关闭 fsync，加大页缓存
+  // 全量解析 DB 从空开始构建，崩溃重解析即可，无需保证持久性
+  if (!is_incremental) {
+    sqlite3_exec(conn.Get(), "PRAGMA wal_autocheckpoint=0", nullptr, nullptr, nullptr);
+    sqlite3_exec(conn.Get(), "PRAGMA synchronous=OFF", nullptr, nullptr, nullptr);
+    sqlite3_exec(conn.Get(), "PRAGMA cache_size=-65536", nullptr, nullptr, nullptr);
+  }
   int64_t t_db_open = now_ms();
 
   int64_t project_id = EnsureProjectId(conn.Get(), proj_root, cc_path);
@@ -84,13 +91,8 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   std::vector<TUEntry> tus_to_parse;
 
   if (is_incremental) {
-    std::vector<std::string> paths;
-    paths.reserve(candidate_tus.size());
-    for (const auto& t : candidate_tus) paths.push_back(t.source_file);
-    auto changed = GetChangedFiles(conn.Get(), project_id, paths);
-    // Build a set for quick lookup
-    std::unordered_set<std::string> changed_set;
-    for (const auto& cf : changed) changed_set.insert(cf.path);
+    std::vector<std::string> changed = GetChangedFiles(conn.Get(), project_id);
+    std::unordered_set<std::string> changed_set(changed.begin(), changed.end());
     for (const auto& tu : candidate_tus) {
       if (changed_set.count(tu.source_file)) tus_to_parse.push_back(tu);
     }
@@ -104,15 +106,9 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
       }
       return 0;
     }
-    // Delete old data for changed files
-    DbWriter writer(conn.Get(), project_id);
-    writer.SetDbDir(fs::path(db_path).parent_path().string());
     conn.BeginTransaction();
-    for (const auto& cf : changed) {
-      int64_t fid = cf.file_id;
-      if (fid == 0) fid = QueryFileIdByPath(conn.Get(), project_id, cf.path);
-      if (fid > 0) writer.DeleteDataForFile(fid);
-    }
+    RemoveDataForFiles(conn.Get(), project_id, changed,
+                       fs::path(db_path).parent_path().string());
     conn.Commit();
   } else {
     tus_to_parse = candidate_tus;
@@ -153,7 +149,7 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
 
     // 批量事务：每 BATCH_SIZE 个 TU 一次 commit，减少 WAL 刷新开销
     // 第一个 TU 或上一批刚 commit 完时开启新事务
-    const int BATCH_SIZE = 16;
+    const int BATCH_SIZE = 256;
     if ((db_tu_count - 1) % BATCH_SIZE == 0) {
       uint64_t t0 = now_us();
       conn.BeginTransaction();
@@ -202,10 +198,14 @@ int RunParse(const ParseOptions& opts, ParseSummary* summary) {
   int64_t t_analysis_done = now_ms();
 
   // 提交最后一个不完整批次（db_tu_count % BATCH_SIZE != 0 时事务仍处于打开状态）
-  if (db_tu_count > 0 && db_tu_count % 16 != 0) {
+  if (db_tu_count > 0 && db_tu_count % 256 != 0) {
     uint64_t tc = now_us();
     conn.Commit();
     db_commit_us += (now_us() - tc);
+  }
+  // 全量解析：解析完成后执行一次 TRUNCATE checkpoint，将 WAL 合并回主文件
+  if (!is_incremental) {
+    sqlite3_exec(conn.Get(), "PRAGMA wal_checkpoint(TRUNCATE)", nullptr, nullptr, nullptr);
   }
   int64_t t_final_commit = now_ms();
 
