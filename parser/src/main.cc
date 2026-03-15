@@ -3,6 +3,7 @@
  * 子命令：parse / query / list-runs；退出码见接口约定 §4
  * 隐藏子命令：parse-tu（JSON 模式，供调试）、parse-tu-worker（Protobuf 帧模式，供 Pre-fork Worker Pool）
  */
+#include "incremental/incremental.h"  // GetFileMtime/ComputeFileHash，尽早包含避免 Linux 下可见性不足
 
 #include "cli/parse_args.h"
 #include "common/error_code.h"
@@ -17,7 +18,6 @@
 #include "ast/combined/action.h"
 #include "common/analysis_output.h"
 #include "compile_commands/load.h"
-#include "incremental/incremental.h"
 #include "scheduler/ipc_proto.h"
 #include "scheduler/pool.h"
 #include <filesystem>
